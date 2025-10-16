@@ -48,29 +48,29 @@ def basic_transform(df: pl.DataFrame) -> pl.DataFrame:
     """
     logger.info("Transformando dados básicos de egressos…")
 
-    # aplica limpeza de strings
+    # nomes normalizados
     df = df.with_columns([
         pl.col("nome").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_norm"),
         pl.col("nome_pai").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_pai_norm"),
         pl.col("nome_mae").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_mae_norm"),
     ])
 
-    # limpa CPF e cria ID hash
+    # CPF limpo e id hash
     df = df.with_columns([
         pl.col("cpf").map_elements(_clean_cpf, return_dtype=pl.Utf8).alias("cpf_limpo"),
     ])
-
     df = df.with_columns([
         pl.col("cpf_limpo").map_elements(lambda x: hash_identifier(x, CPF_SALT), return_dtype=pl.Utf8).alias("id_pessoa"),
     ])
 
-    # idade & faixa
+    # data de nascimento (cast seguro) → idade e faixa
     df = df.with_columns([
-        pl.col("data_nascimento").dt.date().alias("dn_date"),
+        pl.col("data_nascimento").cast(pl.Date, strict=False).alias("dn_date"),
     ])
-
     df = df.with_columns([
         pl.col("dn_date").map_elements(_calc_idade, return_dtype=pl.Int64).alias("idade"),
+    ])
+    df = df.with_columns([
         pl.col("idade").map_elements(_faixa_etaria, return_dtype=pl.Utf8).alias("faixa_etaria"),
     ])
 

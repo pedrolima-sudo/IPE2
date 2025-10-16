@@ -22,4 +22,5 @@ def export_parquet(df: pl.DataFrame, dataset_name: str = "egressos") -> Path:
         out_file = part_dir / f"faixa={safe}.parquet"
         pdf.write_parquet(out_file)
 
+
     return out_dir

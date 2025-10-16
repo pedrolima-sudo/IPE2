@@ -3,9 +3,9 @@
 ## Rodar manualmente
 ```powershell
 # na raiz do projeto
-$env:EGRESSO_EXCEL_FILE = "C:\\caminho\\egressos.xlsx"  # (ou configure no .env)
-python -m src.etl.pipeline                      # usa EGRESSO_EXCEL_FILE do .env
-python -m src.etl.pipeline --excel C:\\...xlsx  # ou passe via CLI
+$env:EGRESSO_EXCEL_FILE = "C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx"  
+python -m src.etl.pipeline                      
+python -m src.etl.pipeline --excel C:ipe2_archives\excel\egressos_ime_db_fake.xlsx 
 ```
 
 ## Scheduler (todo dia 03:00 via .env SCHEDULE_CRON)
