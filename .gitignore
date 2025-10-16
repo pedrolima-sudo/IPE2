@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# VS Code
+.vscode/
+
+# Dados e logs (mantém estrutura sem arquivos)
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Arquivos grandes temporários
+*.zip
+*.7z
+*.rar
+*.tmp
