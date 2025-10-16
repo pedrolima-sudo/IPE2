@@ -18,7 +18,8 @@ def export_parquet(df: pl.DataFrame, dataset_name: str = "egressos") -> Path:
     part_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Gravando Parquet particionado por faixa_etaria em: {part_dir}")
     for faixa, pdf in df.partition_by("faixa_etaria", as_dict=True).items():
-        safe = str(faixa).replace("/", "-")
-        (part_dir / f"faixa={safe}.parquet").write_bytes(pdf.write_parquet())
+        safe = "NULL" if faixa is None else str(faixa).replace("/", "-")
+        out_file = part_dir / f"faixa={safe}.parquet"
+        pdf.write_parquet(out_file)
 
     return out_dir

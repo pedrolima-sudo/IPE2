@@ -50,18 +50,18 @@ def basic_transform(df: pl.DataFrame) -> pl.DataFrame:
 
     # aplica limpeza de strings
     df = df.with_columns([
-        pl.col("nome").map_elements(normalize_name).alias("nome_norm"),
-        pl.col("nome_pai").map_elements(normalize_name).alias("nome_pai_norm"),
-        pl.col("nome_mae").map_elements(normalize_name).alias("nome_mae_norm"),
+        pl.col("nome").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_norm"),
+        pl.col("nome_pai").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_pai_norm"),
+        pl.col("nome_mae").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_mae_norm"),
     ])
 
     # limpa CPF e cria ID hash
     df = df.with_columns([
-        pl.col("cpf").map_elements(_clean_cpf).alias("cpf_limpo"),
+        pl.col("cpf").map_elements(_clean_cpf, return_dtype=pl.Utf8).alias("cpf_limpo"),
     ])
 
     df = df.with_columns([
-        pl.col("cpf_limpo").map_elements(lambda x: hash_identifier(x, CPF_SALT)).alias("id_pessoa"),
+        pl.col("cpf_limpo").map_elements(lambda x: hash_identifier(x, CPF_SALT), return_dtype=pl.Utf8).alias("id_pessoa"),
     ])
 
     # idade & faixa
@@ -70,8 +70,8 @@ def basic_transform(df: pl.DataFrame) -> pl.DataFrame:
     ])
 
     df = df.with_columns([
-        pl.col("dn_date").map_elements(_calc_idade).alias("idade"),
-        pl.col("idade").map_elements(_faixa_etaria).alias("faixa_etaria"),
+        pl.col("dn_date").map_elements(_calc_idade, return_dtype=pl.Int64).alias("idade"),
+        pl.col("idade").map_elements(_faixa_etaria, return_dtype=pl.Utf8).alias("faixa_etaria"),
     ])
 
     # último curso (heurística simples: usa 'curso' se existir)
