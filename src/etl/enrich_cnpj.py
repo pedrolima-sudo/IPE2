@@ -4,7 +4,8 @@ import polars as pl
 from loguru import logger
 from rapidfuzz import fuzz
 from ..utils.settings import CNPJ_BASE_DIR
-
+from ..utils.settings import CNPJ_BASE_DIR, SILVER_DIR
+import subprocess, sys
 
 # Estratégia mínima: 
 # 1) Se houver um arquivo de sócios já preparado (ex.: silver/socios.parquet) com coluna 'cpf_socio'
@@ -14,31 +15,37 @@ from ..utils.settings import CNPJ_BASE_DIR
 
 
 def _load_socios_by_cpf() -> pl.DataFrame | None:
-    # Procura por um parquet pronto (você pode preparar isso depois em outro script)
-    for path in [CNPJ_BASE_DIR.parent / "silver" / "socios.parquet",
-                 CNPJ_BASE_DIR / "socios.parquet"]:
+    for path in [
+        SILVER_DIR / "socios.parquet",
+        CNPJ_BASE_DIR / "socios.parquet",
+        CNPJ_BASE_DIR.parent / "silver" / "socios.parquet",
+    ]:
         if Path(path).exists():
             logger.info(f"Carregando sócios por CPF: {path}")
             return pl.read_parquet(path)
     logger.warning("Base de sócios por CPF não encontrada. Pulei enriquecimento por CPF.")
     return None
 
-
 def _load_socios_by_nome() -> pl.DataFrame | None:
-    for path in [CNPJ_BASE_DIR.parent / "silver" / "socios_nomes.parquet",
-                 CNPJ_BASE_DIR / "socios_nomes.parquet",
-                 CNPJ_BASE_DIR / "socios_nomes.csv"]:
+    for path in [
+        SILVER_DIR / "socios_nomes.parquet",
+        SILVER_DIR / "socios_nomes.csv",
+        CNPJ_BASE_DIR / "socios_nomes.parquet",
+        CNPJ_BASE_DIR / "socios_nomes.csv",
+        CNPJ_BASE_DIR.parent / "silver" / "socios_nomes.parquet",
+        CNPJ_BASE_DIR.parent / "silver" / "socios_nomes.csv",
+    ]:
         if Path(path).exists():
             logger.info(f"Carregando base de sócios por nome: {path}")
-            if str(path).endswith(".csv"):
-                return pl.read_csv(path)
-            return pl.read_parquet(path)
+            return pl.read_parquet(path) if str(path).endswith(".parquet") else pl.read_csv(path)
     logger.warning("Base de sócios por nome não encontrada. Pulei fallback por nome.")
     return None
 
 
+
 def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
     logger.info("Marcando fundadores/sócios a partir das bases disponíveis…")
+    _ensure_socios_data(max_files=3)  # pode ajustar para -1 quando quiser baixar tudo
 
     # 1) Join por CPF (mais robusto)
     socios_cpf = _load_socios_by_cpf()
@@ -73,3 +80,25 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
         df = df.with_columns(pl.lit(False).alias("eh_socio_por_nome"))
 
     return df.with_columns((pl.col("eh_socio_por_cpf") | pl.col("eh_socio_por_nome")).alias("eh_socio_fundador"))
+
+def _ensure_socios_data(max_files: int = 3) -> None:
+    """
+    Se a base de sócios ainda não existe em data/silver, dispara o preparo mínimo.
+    max_files controla quantos zips 'Socios' baixar (3 = teste rápido; -1 = todos).
+    """
+    alvo_cpf = SILVER_DIR / "socios.parquet"
+    alvo_nome = SILVER_DIR / "socios_nomes.parquet"
+    if alvo_cpf.exists() and alvo_nome.exists():
+        return
+    try:
+        from loguru import logger
+        logger.warning("Base de sócios ausente. Iniciando download/preparo mínimo (--max-files=%d)...", max_files)
+        subprocess.run(
+            [sys.executable, "-m", "src.cnpj.prepare_socios", "--max-files", str(max_files)],
+            check=True
+        )
+        logger.success("Preparo de sócios concluído.")
+    except Exception as e:
+        logger.exception(e)
+        # segue sem enriquecer, mas sem quebrar o pipeline
+
