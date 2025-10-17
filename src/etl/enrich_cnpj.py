@@ -1,9 +1,10 @@
+"""Utilitários para enriquecer a base de egressos com indicadores de sócios/fundadores."""
+
 from __future__ import annotations
 from pathlib import Path
 import polars as pl
 from loguru import logger
 from rapidfuzz import fuzz
-from ..utils.settings import CNPJ_BASE_DIR
 from ..utils.settings import CNPJ_BASE_DIR, SILVER_DIR
 import subprocess, sys
 
@@ -15,6 +16,7 @@ import subprocess, sys
 
 
 def _load_socios_by_cpf() -> pl.DataFrame | None:
+    """Busca uma base de sócios contendo coluna CPF nas localizações conhecidas e retorna como DataFrame."""
     for path in [
         SILVER_DIR / "socios.parquet",
         CNPJ_BASE_DIR / "socios.parquet",
@@ -27,6 +29,7 @@ def _load_socios_by_cpf() -> pl.DataFrame | None:
     return None
 
 def _load_socios_by_nome() -> pl.DataFrame | None:
+    """Retorna a base de sócios indexada por nome (parquet ou CSV), se algum arquivo esperado estiver presente."""
     for path in [
         SILVER_DIR / "socios_nomes.parquet",
         SILVER_DIR / "socios_nomes.csv",
@@ -44,6 +47,7 @@ def _load_socios_by_nome() -> pl.DataFrame | None:
 
 
 def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
+    """Enriquece o DataFrame de egressos com indicadores booleanos de sócio/fundador via CPF e aproximação por nome."""
     logger.info("Marcando fundadores/sócios a partir das bases disponíveis…")
     _ensure_socios_data(max_files=3)  # pode ajustar para -1 quando quiser baixar tudo
 
@@ -82,9 +86,9 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns((pl.col("eh_socio_por_cpf") | pl.col("eh_socio_por_nome")).alias("eh_socio_fundador"))
 
 def _ensure_socios_data(max_files: int = 3) -> None:
-    """
-    Se a base de sócios ainda não existe em data/silver, dispara o preparo mínimo.
-    max_files controla quantos zips 'Socios' baixar (3 = teste rápido; -1 = todos).
+    """Garante a presença das bases de sócios em data/silver, disparando o download/preparo quando necessário.
+
+    max_files controla quantos arquivos compactados "Socios" baixar (3 = teste rápido; -1 = todos).
     """
     alvo_cpf = SILVER_DIR / "socios.parquet"
     alvo_nome = SILVER_DIR / "socios_nomes.parquet"
