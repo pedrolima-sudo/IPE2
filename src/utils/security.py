@@ -1,3 +1,14 @@
+"""
+MÓDULO DE UTILITÁRIOS DE SEGURANÇA
+=================================
+
+O módulo security.py fornece funções para operações de segurança, como hashing de identificadores.
+
+Autor: Pedro Henrique Lima Silva
+Data de criação: 15/10/2025
+Última modificação: 16/10/2025
+"""
+
 import hmac
 import hashlib
 
