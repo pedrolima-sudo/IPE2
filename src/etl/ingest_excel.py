@@ -1,3 +1,14 @@
+"""
+MÓDULO PARA INGESTÃO DE DADOS DE EGRESSOS A PARTIR DE ARQUIVOS EXCEL
+=======================================================================
+
+Este módulo pega o Excel bruto de egressos e devolve um DataFrame Polars limpo e padronizado para as próximas etapas.
+
+Autor: Pedro Henrique Lima Silva
+Data de criação: 15/10/2025
+Última modificação: 17/10/2025
+"""
+
 from __future__ import annotations
 from pathlib import Path
 import pandas as pd
@@ -17,7 +28,19 @@ EXPECTED_COLS = {
     "curso": str,
     "codigo_curso": str,
     "nivel": str,
-    "situacaoCurso": str,
+    "situacao_curso": str,
+}
+
+# mapeia variáveis comuns (após normalização) para o nome canônico usado no pipeline
+COLUMN_ALIASES = {
+    "matriculadre": "matricula",
+    "datanascimento": "data_nascimento",
+    "dataingresso": "data_ingresso",
+    "dataconclusao": "data_formacao",
+    "pai": "nome_pai",
+    "mae": "nome_mae",
+    "codigo": "codigo_curso",
+    "situacaocurso": "situacao_curso",
 }
 
 
@@ -38,11 +61,12 @@ def read_egressos_excel(path: Path) -> pl.DataFrame:
         .str.replace(" ", "_", regex=False)
         .str.replace("-", "_", regex=False)
     )
+    df_pd.columns = [COLUMN_ALIASES.get(col, col) for col in df_pd.columns]
 
     # tenta converter datas se existirem
     for col in ("data_nascimento", "data_ingresso", "data_formacao"):
         if col in df_pd.columns:
-            df_pd[col] = pd.to_datetime(df_pd[col], errors="coerce")
+            df_pd[col] = pd.to_datetime(df_pd[col], errors="coerce", dayfirst=True)
 
     # converte para polars
     df = pl.from_pandas(df_pd)
