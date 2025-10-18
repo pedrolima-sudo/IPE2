@@ -1,77 +1,154 @@
+# src/cnpj/download_cnpj.py
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Iterable
-from pathlib import Path
+
+import argparse
 import re
+import time
+from pathlib import Path
+from typing import Iterable, List, Tuple
+
 import httpx
-from bs4 import BeautifulSoup
 from loguru import logger
 
-# Índice oficial (publicação mensal)
-DEFAULT_INDEX_URL = "https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj/"
-
-@dataclass
-class CNPJFile:
-    url: str
-    name: str
+# Hosts oficiais (prioriza o domínio novo; cai no antigo se necessário)
+DEFAULT_INDEX_URLS = [
+    "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/"
+]
 
 
-def _get(url: str, timeout: float = 30.0) -> str:
-    headers = {"User-Agent": "egressos-portal/1.0 (github.com)"}
+# ----------------------------- HTTP util -----------------------------
+
+def _get_text(url: str, timeout: float = 60.0, retries: int = 3) -> str:
+    """GET com retries/backoff simples, retorna .text; levanta erro se esgotar."""
+    headers = {"User-Agent": "egressos-portal/1.0 (+github)"}
+    exc = None
+    for i in range(retries):
+        try:
+            with httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as client:
+                r = client.get(url)
+                r.raise_for_status()
+                return r.text
+        except httpx.HTTPError as e:
+            exc = e
+            logger.warning(f"GET falhou ({e.__class__.__name__}): {e}. Tentando novamente…")
+            time.sleep(2 ** i)  # 1s, 2s, 4s
+    assert exc is not None
+    raise exc
+
+
+def _stream_download(url: str, dest: Path, timeout: float = 120.0) -> None:
+    """Baixa com streaming para arquivo destino."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    headers = {"User-Agent": "egressos-portal/1.0 (+github)"}
     with httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as client:
-        r = client.get(url)
-        r.raise_for_status()
-        return r.text
+        with client.stream("GET", url) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length", "0"))
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            downloaded = 0
+            with open(tmp, "wb") as w:
+                for chunk in r.iter_bytes():
+                    if chunk:
+                        w.write(chunk)
+                        downloaded += len(chunk)
+            tmp.replace(dest)
+    logger.info(f"OK: {dest.name} ({total/1_048_576:.1f} MiB aprox.)")
 
 
-def list_months(index_url: str = DEFAULT_INDEX_URL) -> list[str]:
-    """Lista subpastas AAAA-MM publicadas no índice oficial."""
-    html = _get(index_url)
-    soup = BeautifulSoup(html, "lxml")
-    months = []
-    for a in soup.select("a"):
-        href = a.get("href", "")
-        if re.fullmatch(r"\d{4}-\d{2}/", href):
-            months.append(href.rstrip("/"))
-    months_sorted = sorted(months)
-    logger.info(f"Meses encontrados ({len(months_sorted)}): {months_sorted[-3:]}")
-    return months_sorted
+# ----------------------------- Parsing do índice -----------------------------
+
+def _pick_working_index(index_url: str | None) -> str:
+    """Se index_url vier None, tenta os defaults até achar um que responde."""
+    candidates = [index_url] if index_url else DEFAULT_INDEX_URLS
+    last_err = None
+    for base in candidates:
+        try:
+            _ = _get_text(base, timeout=30, retries=2)
+            return base if base.endswith("/") else base + "/"
+        except Exception as e:
+            last_err = e
+            logger.debug(f"Host indisponível: {base} ({e})")
+    raise RuntimeError(f"Nenhum host de índice respondeu. Último erro: {last_err}")
 
 
-def list_files(month: str, index_url: str = DEFAULT_INDEX_URL, prefix_filter: str | None = None) -> list[CNPJFile]:
-    """Lista arquivos de um mês específico (ex.: '2024-09').
-    prefix_filter: por exemplo 'Socios' ou 'Estabelecimentos'.
+def list_months(index_url: str | None = None) -> List[str]:
     """
-    base = index_url.rstrip("/") + f"/{month}/"
-    html = _get(base)
-    soup = BeautifulSoup(html, "lxml")
-    out: list[CNPJFile] = []
-    for a in soup.select("a"):
-        name = a.get_text(strip=True)
-        if not name or not name.lower().endswith(".zip"):
-            continue
-        if prefix_filter and not name.lower().startswith(prefix_filter.lower()):
-            continue
-        out.append(CNPJFile(url=base + name, name=name))
-    logger.info(f"Arquivos listados para {month} ({prefix_filter or 'todos'}): {len(out)}")
+    Retorna meses disponíveis no índice (ex.: ['2025-05','2025-06',...]).
+    """
+    base = _pick_working_index(index_url)
+    html = _get_text(base)
+    # diretórios AAAA-MM/
+    months = sorted(set(re.findall(r'href=["\'](\d{4}-\d{2})/["\']', html)))
+    if not months:
+        raise RuntimeError("Não encontrei diretórios AAAA-MM no índice da RFB.")
+    logger.info(f"Meses no índice {base}: {months[-3:] if len(months)>3 else months}")
+    return months
+
+
+def _month_url(index_url: str | None, month: str) -> str:
+    base = _pick_working_index(index_url)
+    return f"{base}{month}/"
+
+
+def list_files(index_url: str | None, month: str, prefix: str = "Socios") -> List[str]:
+    """
+    Lista nomes de arquivos dentro de AAAA-MM/ filtrando por prefixo (default: 'Socios').
+    Ex.: ['Socios0.zip', 'Socios1.zip', ...]
+    """
+    url = _month_url(index_url, month)
+    html = _get_text(url)
+    files = sorted(set(re.findall(r'href=["\']([^"\']+\.zip)["\']', html)))
+    out = [f for f in files if f.startswith(prefix)]
+    if not out:
+        logger.warning(f"Nenhum arquivo com prefixo '{prefix}' em {url}")
     return out
 
 
-def download_files(files: Iterable[CNPJFile], dest_dir: Path, overwrite: bool = False) -> list[Path]:
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    saved: list[Path] = []
-    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-        for f in files:
-            out = dest_dir / f.name
-            if out.exists() and not overwrite:
-                logger.info(f"Já existe (skip): {out}")
-                saved.append(out)
-                continue
-            logger.info(f"Baixando: {f.url}")
-            with client.stream("GET", f.url) as r:
-                r.raise_for_status()
-                with open(out, "wb") as w:
-                    for chunk in r.iter_bytes():
-                        w.write(chunk)
-            saved.append(out)
-    return saved
+# ----------------------------- CLI principal -----------------------------
+
+def download_many(index_url: str | None, month: str, out_dir: Path, prefix: str = "Socios", max_files: int = -1) -> Path:
+    """
+    Baixa os arquivos `prefix*.zip` do mês para `out_dir/AAAA-MM/`.
+    max_files: -1 para todos; ou um inteiro para limitar (útil para testes).
+    """
+    files = list_files(index_url, month, prefix=prefix)
+    if max_files is not None and max_files >= 0:
+        files = files[:max_files]
+
+    month_dir = out_dir / month
+    month_dir.mkdir(parents=True, exist_ok=True)
+
+    base = _month_url(index_url, month)
+    logger.info(f"Baixando {len(files)} arquivo(s) de {base} → {month_dir}")
+    for name in files:
+        url = base + name
+        dst = month_dir / name
+        if dst.exists() and dst.stat().st_size > 0:
+            logger.info(f"Pulando (já existe): {dst.name}")
+            continue
+        logger.info(f"GET {url}")
+        _stream_download(url, dst)
+    return month_dir
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Baixa arquivos de Sócios (Dados Abertos CNPJ/RFB).")
+    ap.add_argument("--index-url", default=None, help="URL base do índice (deixe vazio para autodetectar).")
+    ap.add_argument("--month", default="latest", help="Mês AAAA-MM ou 'latest'.")
+    ap.add_argument("--out", default="data/raw/cnpj", help="Diretório base de saída.")
+    ap.add_argument("--prefix", default="Socios", help="Prefixo de arquivo a baixar (padrão: Socios).")
+    ap.add_argument("--max-files", type=int, default=-1, help="-1 para todos; ou limite (ex.: 3).")
+    args = ap.parse_args()
+
+    out_dir = Path(args.out).resolve()
+    months = list_months(args.index_url)
+    month = months[-1] if args.month.lower() == "latest" else args.month
+    if month not in months:
+        raise SystemExit(f"Mês '{month}' não encontrado no índice. Disponíveis: {months[-5:]}")
+
+    download_many(args.index_url, month, out_dir, prefix=args.prefix, max_files=args.max_files)
+    logger.success("Concluído.")
+
+
+if __name__ == "__main__":
+    main()
