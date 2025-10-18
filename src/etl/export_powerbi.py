@@ -1,3 +1,15 @@
+"""
+MÓDULO PARA EXPORTAÇÃO DE DADOS DE EGRESSOS EM FORMATO PARQUET PARA POWER BI
+================================================================================
+
+Este módulo exporta os dados de egressos transformados em arquivos Parquet,
+particionados por faixa etária, otimizados para consumo no Power BI.
+
+Autor: Pedro Henrique Lima Silva
+Data de criação: 15/10/2025
+Última modificação: 16/10/2025
+"""
+
 from __future__ import annotations
 from pathlib import Path
 import polars as pl

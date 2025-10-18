@@ -1,3 +1,14 @@
+"""
+MÓDULO PARA AGENDAMENTO AUTOMÁTICO DO PIPELINE ETL DE EGRESSOS
+================================================================
+
+Este módulo agenda a execução periódica do pipeline ETL de egressos usando APScheduler.
+
+Autor: Pedro Henrique Lima Silva
+Data de criação: 15/10/2025
+Última modificação: 16/10/2025
+"""
+
 from __future__ import annotations
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger

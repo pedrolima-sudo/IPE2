@@ -1,3 +1,15 @@
+"""
+MÓDULO PARA TRANSFORMAÇÃO DE DADOS DE EGRESSOS
+=================================================
+
+Este módulo aplica transformações básicas nos dados de egressos, como limpeza de nomes, CPF, 
+cálculo de idade e faixa etária, e geração de IDs hash.
+
+Autor: Pedro Henrique Lima Silva
+Data de criação: 15/10/2025
+Última modificação: 16/10/2025
+"""
+
 from __future__ import annotations
 from datetime import date
 from dateutil.relativedelta import relativedelta
@@ -44,7 +56,7 @@ def _faixa_etaria(idade: int | None) -> str:
 
 def basic_transform(df: pl.DataFrame) -> pl.DataFrame:
     """Limpeza e features básicas: nomes, CPF, idade/faixa, IDs hash.
-    Requer colunas: nome, cpf, data_nascimento (se existirem no input).
+    Requer colunas: nome, cpf, data_nascimento.
     """
     logger.info("Transformando dados básicos de egressos…")
 

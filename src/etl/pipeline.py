@@ -1,3 +1,15 @@
+"""
+MóDULO PARA PIPELINE ETL DE DADOS DE EGRESSOS
+=================================================
+
+Este módulo orquestra a execução do pipeline ETL completo para dados de egressos,
+incluindo ingestão, transformação, enriquecimento e exportação.
+
+Autor: Pedro Henrique Lima Silva
+Data de criação: 15/10/2025
+Última modificação: 16/10/2025
+"""
+
 from __future__ import annotations
 import argparse
 from pathlib import Path
