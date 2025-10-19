@@ -5,7 +5,7 @@ MÓDULO PARA ENRIQUECIMENTO DE DADOS DE EGRESSOS COM INFORMAÇÕES DE CNPJ
 Este módulo enriquece o DataFrame de egressos com indicadores de sócio/fundador
 a partir de bases externas de CNPJ.
 
-Autor: Pedro Henrique Lima Silva
+Autor:Pedro Henrique Lima Silva
 Data de criação: 15/10/2025
 Última modificação: 16/10/2025
 """

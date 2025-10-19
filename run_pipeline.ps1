@@ -1,3 +1,5 @@
+"""Para executar o pipeline ETL completo só colocar no powershell:
+.\run_pipeline.ps1"""
 param(
     [string]$ExcelPath = "C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx",
     [int]$SociosMaxFiles = -1

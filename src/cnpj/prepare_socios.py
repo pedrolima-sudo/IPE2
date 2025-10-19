@@ -5,6 +5,7 @@ MÓDULO DE PREPARAÇÃO DOS DADOS DE SÓCIOS
 Prepara os dados de sócios extraídos dos arquivos .zip do CNPJ,
 gerando tabelas deduplicadas por CPF e por nome.
 
+Autor: Pedro Henrique Lima Silva (essa parte é toda mérito do gpt)
 Data de criação: 15/10/2025
 Última modificação: 18/10/2025
 """

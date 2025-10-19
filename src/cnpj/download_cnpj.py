@@ -4,6 +4,7 @@ MÓDULO DE DOWNLOAD DOS ARQUIVOS DE SÓCIOS
 
 Baixa os arquivos .zip do índice da RFB, com retries e logging.
 
+Autor: Pedro Henrique Lima Silva (essa parte é toda mérito do gpt)
 Data de criação: 15/10/2025
 Última modificação: 18/10/2025
 """
