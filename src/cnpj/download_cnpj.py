@@ -1,18 +1,27 @@
-# src/cnpj/download_cnpj.py
+"""
+MÓDULO DE DOWNLOAD DOS ARQUIVOS DE SÓCIOS 
+===========================================
+
+Baixa os arquivos .zip do índice da RFB, com retries e logging.
+
+Data de criação: 15/10/2025
+Última modificação: 18/10/2025
+"""
 from __future__ import annotations
 
 import argparse
 import re
 import time
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import List
 
 import httpx
 from loguru import logger
 
-# Hosts oficiais (prioriza o domínio novo; cai no antigo se necessário)
+# Hosts padrão para o índice de arquivos CNPJ
 DEFAULT_INDEX_URLS = [
-    "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/"
+    "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/",
+    "https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj/",
 ]
 
 
@@ -90,6 +99,19 @@ def _month_url(index_url: str | None, month: str) -> str:
     return f"{base}{month}/"
 
 
+def _natural_key(name: str) -> tuple:
+    parts = re.split(r"(\d+)", name)
+    key = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            key.append(int(part))
+        else:
+            key.append(part.lower())
+    return tuple(key)
+
+
 def list_files(index_url: str | None, month: str, prefix: str = "Socios") -> List[str]:
     """
     Lista nomes de arquivos dentro de AAAA-MM/ filtrando por prefixo (default: 'Socios').
@@ -97,7 +119,7 @@ def list_files(index_url: str | None, month: str, prefix: str = "Socios") -> Lis
     """
     url = _month_url(index_url, month)
     html = _get_text(url)
-    files = sorted(set(re.findall(r'href=["\']([^"\']+\.zip)["\']', html)))
+    files = sorted(set(re.findall(r'href=["\']([^"\']+\.zip)["\']', html)), key=_natural_key)
     out = [f for f in files if f.startswith(prefix)]
     if not out:
         logger.warning(f"Nenhum arquivo com prefixo '{prefix}' em {url}")
