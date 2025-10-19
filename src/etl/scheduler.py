@@ -13,18 +13,25 @@ from __future__ import annotations
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
+from ..cnpj.prepare_socios import run_prepare_socios
 from .pipeline import run_pipeline
-from ..utils.settings import SCHEDULE_CRON, EGRESSO_EXCEL_FILE
+from ..utils.settings import SCHEDULE_CRON, EGRESSO_EXCEL_FILE, SOCIOS_MAX_FILES
 
 
 def job():
     try:
-        logger.info("[scheduler] Iniciando job ETL…")
+        if SOCIOS_MAX_FILES == 0:
+            logger.info("[scheduler] Pulando atualizacao de socios (SOCIOS_MAX_FILES=0).")
+        else:
+            logger.info("[scheduler] Atualizando base de socios...")
+            out_cpf, out_nome = run_prepare_socios(max_files=SOCIOS_MAX_FILES)
+            if out_cpf and out_nome:
+                logger.info(f"[scheduler] Arquivos gerados: {out_cpf.name}, {out_nome.name}")
+        logger.info("[scheduler] Iniciando job ETL...")
         run_pipeline(EGRESSO_EXCEL_FILE)
         logger.success("[scheduler] Job ETL finalizado com sucesso.")
     except Exception as e:
         logger.exception(e)
-
 
 def main():
     if not EGRESSO_EXCEL_FILE:

@@ -170,32 +170,33 @@ def build_socios_tables(csvs: list[Path]) -> tuple[pl.DataFrame, pl.DataFrame]:
     return socios_por_cpf, socios_por_nome
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Baixa e prepara base de Sócios (QSA) para enriquecimento")
-    parser.add_argument("--month", help="Mês AAAA-MM (ex.: 2024-09). Se não informado, pega o mais recente.", default=None)
-    parser.add_argument("--max-files", type=int, default=3, help="Limita quantos zips de Sócios baixar (p/ teste rápido). Use -1 para todos.")
-    parser.add_argument("--index-url", default=None, help="URL base do índice (deixe vazio para autodetectar)")
-    args = parser.parse_args()
-
-    month = args.month
-    if not month:
-        months = list_months(args.index_url)
+def run_prepare_socios(
+    month: str | None = None,
+    max_files: int = 3,
+    index_url: str | None = None,
+) -> tuple[Path | None, Path | None]:
+    """
+    Baixa, extrai e gera os Parquets de sócios. Retorna caminhos (socios.parquet, socios_nomes.parquet).
+    """
+    target_month = month
+    if not target_month:
+        months = list_months(index_url)
         if not months:
-            raise SystemExit("Nenhum mês encontrado no índice da RFB.")
-        month = months[-1]
-        logger.info(f"Usando mês mais recente: {month}")
+            raise SystemExit("Nenhum mês encontrado.")
+        target_month = months[-1]
+        logger.info(f"Usando mês mais recente: {target_month}")
 
     CNPJ_BASE_DIR.mkdir(parents=True, exist_ok=True)
-    month_dir = download_many(args.index_url, month, CNPJ_BASE_DIR, prefix="Socios", max_files=args.max_files)
+    month_dir = download_many(index_url, target_month, CNPJ_BASE_DIR, prefix="Socios", max_files=max_files)
 
     zips = sorted(p for p in month_dir.glob("Socios*.zip") if p.is_file())
-    if args.max_files >= 0:
-        zips = zips[:args.max_files]
+    if max_files >= 0:
+        zips = zips[:max_files]
 
     if not zips:
-        if args.max_files == 0:
+        if max_files == 0:
             logger.info("max-files=0 -> nada a baixar ou preparar.")
-            return
+            return None, None
         raise SystemExit("Nenhum arquivo .zip de socios encontrado apos download.")
 
     extract_dir = month_dir / "extracted"
@@ -213,6 +214,21 @@ def main():
     socios_por_nome.write_parquet(out_nome)
     logger.success(f"Gerado: {out_nome} (nomes únicos: {socios_por_nome.height})")
 
+    return out_cpf, out_nome
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Baixa e prepara base de Sócios (QSA) para enriquecimento")
+    parser.add_argument("--month", help="Mês AAAA-MM (ex.: 2024-09). Se não informado, pega o mais recente.", default=None)
+    parser.add_argument("--max-files", type=int, default=3, help="Limita quantos zips de Sócios baixar (p/ teste rápido). Use -1 para todos.")
+    parser.add_argument("--index-url", default=None, help="URL base do índice (deixe vazio para autodetectar)")
+    args = parser.parse_args()
+
+    run_prepare_socios(
+        month=args.month,
+        max_files=args.max_files,
+        index_url=args.index_url,
+    )
 
 if __name__ == "__main__":
     main()

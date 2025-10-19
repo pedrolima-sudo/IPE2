@@ -28,6 +28,7 @@ LOG_DIR         = Path(os.getenv("LOG_DIR", ROOT / "logs")).resolve()
 ENV           = os.getenv("ENV", "dev")
 USE_DUCKDB    = os.getenv("USE_DUCKDB", "1") in ("1", "true", "True")
 SCHEDULE_CRON = os.getenv("SCHEDULE_CRON", "0 3 * * *")
+SOCIOS_MAX_FILES = int(os.getenv("SOCIOS_MAX_FILES", "-1"))
 CPF_SALT      = os.getenv("CPF_SALT")
 
 # Caminho direto para o Excel de egressos

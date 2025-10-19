@@ -5,13 +5,14 @@
 # na raiz do projeto
 $env:EGRESSO_EXCEL_FILE = "C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx"  
 python -m src.etl.pipeline                      
-python -m src.etl.pipeline --excel C:ipe2_archives\excel\egressos_ime_db_fake.xlsx 
+python -m src.etl.pipeline --excel "C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx"
 ```
 
 ## Scheduler (todo dia 03:00 via .env SCHEDULE_CRON)
 ```powershell
 python -m src.etl.scheduler
 ```
+> O scheduler executa `prepare_socios` antes do pipeline. Controle a quantidade de zips com a variavel `.env` `SOCIOS_MAX_FILES` (padrao -1 para todos).
 
 ## Saída para Power BI
 - Parquet em `data/gold/egressos/`
@@ -32,8 +33,16 @@ python -m src.cnpj.prepare_socios --month 2024-09 --max-files 10
 python -m src.etl.pipeline --excel "C:\\caminho\\egressos.xlsx"
 ```
 
+## Scripts de apoio
+```powershell
+# Executa prepare_socios e o pipeline em sequencia, com parametros opcionais
+.\scripts\run_pipeline.ps1 -SociosMaxFiles 3 -ExcelPath "C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx"
+
+# Ativa o scheduler APScheduler usando as variaveis definidas no .env
+.\scripts\run_scheduler.ps1
+```
+
 **Notas**
-- Os dados oficiais ficam em `https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj/` (publicação mensal). Este script baixa apenas os arquivos **Socios*.zip** do mês.
+- Os dados oficiais estao em `https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/` (mirror mantido pela RFB). O script faz fallback para `https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj/` se o host novo ficar fora e baixa apenas os arquivos **Socios*.zip** do mes.
 - O Parquet de saída vai para `data/silver/socios.parquet` (CPF deduplicado) e `data/silver/socios_nomes.parquet` (nomes normalizados).
 - **LGPD**: mantenha `data/silver` fora do Git (já previsto no `.gitignore`). O join por CPF acontece só localmente; o **Power BI** recebe apenas o `id_pessoa` (hash do CPF) e a flag agregada `socio`.
-
