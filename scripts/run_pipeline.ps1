@@ -5,12 +5,19 @@
 
 param(
     [string]$ExcelPath = "C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx",
-    [int]$SociosMaxFiles = -1
+    [int]$SociosMaxFiles = -1 #-1 para usar todos os arquivos disponíveis
 )
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot  = Split-Path -Parent $scriptDir
+
+if (-not (Test-Path (Join-Path $repoRoot ".venv"))) {
+    # fallback: talvez a estrutura seja diretamente na mesma pasta
+    $repoRoot = $scriptDir
+}
+
 $venvScript = Join-Path $repoRoot ".venv\Scripts\Activate.ps1"
 
 if (-not (Test-Path $venvScript)) {

@@ -1,0 +1,82 @@
+Ativação do Portal de Egressos em nova máquina
+==============================================
+
+Pré-requisitos
+--------------
+- Windows com PowerShell 5+.
+- Python 3.12 (ou compatível) instalado e disponível no PATH (`python --version` deve responder).
+- A pasta do projeto copiada/clonada para `C:\ipe2` (ou outro diretório definitivo).
+- Arquivo `.env` e o Excel de egressos nos mesmos caminhos usados originalmente (ex.: `C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx`).
+
+1. Preparar virtualenv e dependências
+------------------------------------
+```powershell
+cd C:\ipe2
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+2. Testar manualmente o pipeline (opcional)
+------------------------------------------
+```powershell
+# ainda dentro da venv
+python -m src.cnpj.prepare_socios --max-files 1
+python -m src.etl.pipeline --excel "C:\ipe2_archives\excel\egressos_ime_db_fake.xlsx"
+# conferir saída em data/gold/egressos/
+python -m src.etl.scheduler   # Ctrl+C para interromper após ver logs
+```
+
+3. Script auxiliar para o agendador
+-----------------------------------
+Criar o arquivo `C:\ipe2\run_scheduler.ps1` com o conteúdo abaixo:
+```powershell
+param(
+    [string]$Repo = "C:\ipe2"
+)
+
+$ErrorActionPreference = "Stop"
+
+$venv = Join-Path $Repo ".venv\Scripts\Activate.ps1"
+if (-not (Test-Path $venv)) { throw "Virtualenv não encontrada: $venv" }
+
+. $venv
+python -m src.etl.scheduler
+```
+
+Teste rápido:
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File "C:\ipe2\run_scheduler.ps1"
+```
+Interrompa com Ctrl+C após confirmar que o scheduler iniciou.
+
+4. Agendar execução diária no Windows
+-------------------------------------
+1. Abra **Agendador de Tarefas** → **Criar Tarefa…**
+2. Guia *Geral*:
+   - Nome: `Portal Egressos Scheduler`
+   - Marque “Executar estando o usuário conectado ou não”
+   - Marque “Executar com privilégios mais altos”
+3. Guia *Triggers*:
+   - Clique **Novo…**, escolha “Diariamente”, defina horário (ex.: 03:00). OK.
+4. Guia *Actions*:
+   - **Novo…** → Programa/script: `powershell.exe`
+   - Argumentos: `-ExecutionPolicy Bypass -File "C:\ipe2\run_scheduler.ps1"`
+   - Iniciar em (opcional): `C:\ipe2`
+5. Guia *Conditions* / *Settings*:
+   - Desmarque “Parar a tarefa se ela for executada por mais de…”
+   - Opcional: habilite “Reiniciar a cada…” para resiliência.
+6. Salve. Informe a senha do usuário quando solicitado.
+
+5. Manutenção
+-------------
+- Atualizar dependências:
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
+  python -m pip install -r requirements.txt
+  ```
+- Ajustar horário: edite `SCHEDULE_CRON` no `.env`; reinicie a tarefa agendada.
+- Verificar logs: `logs/` (gerados pelo Loguru) e histórico da tarefa no Agendador.
+
+Com esses passos a máquina fica pronta para executar o ETL diariamente, usando o cron configurado em `SCHEDULE_CRON`.
