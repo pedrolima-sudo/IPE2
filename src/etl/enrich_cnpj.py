@@ -146,7 +146,14 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
     else:
         df = df.with_columns(pl.lit(False).alias("eh_socio_por_nome"))
 
-    return df.with_columns((pl.col("eh_socio_por_cpf") | pl.col("eh_socio_por_nome")).alias("eh_socio_fundador"))
+    df = df.with_columns(
+        (pl.col("eh_socio_por_cpf") | pl.col("eh_socio_por_nome")).alias("socio")
+    )
+
+    drop_cols = [c for c in ("eh_socio_por_cpf", "eh_socio_por_nome") if c in df.columns]
+    if drop_cols:
+        df = df.drop(drop_cols)
+    return df
 
 def _ensure_socios_data(max_files: int = 3) -> None:
     """Garante a presença das bases de sócios em data/silver, disparando o download/preparo quando necessário.

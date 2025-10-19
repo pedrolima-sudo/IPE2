@@ -39,7 +39,7 @@ def run_pipeline(excel_path: str | None) -> Path:
         "idade", "faixa_etaria",
         "data_nascimento", "data_ingresso", "data_formacao",
         "ultimo_curso", "nivel", "codigo_curso",
-        "eh_socio_fundador", "eh_socio_por_cpf", "eh_socio_por_nome",
+        "socio",
     ]
     cols = [c for c in cols if c in df.columns]
     df_out = df.select(cols)
