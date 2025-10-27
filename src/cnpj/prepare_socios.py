@@ -12,6 +12,7 @@ Data de criação: 15/10/2025
 from __future__ import annotations
 import zipfile
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
 
 import polars as pl
@@ -20,14 +21,22 @@ from unidecode import unidecode
 
 try:
     from .download_cnpj import list_months, download_many
-    from ..utils.settings import CNPJ_BASE_DIR, SILVER_DIR
+    from ..utils.settings import (
+        CNPJ_BASE_DIR,
+        SILVER_DIR,
+        SOCIOS_DOWNLOAD_PREFIXES,
+    )
 except ImportError:  # Execução direta (python src/cnpj/prepare_socios.py)
     import sys
     from pathlib import Path as _Path
 
     sys.path.append(str(_Path(__file__).resolve().parents[2]))
     from src.cnpj.download_cnpj import list_months, download_many  # type: ignore
-    from src.utils.settings import CNPJ_BASE_DIR, SILVER_DIR  # type: ignore
+    from src.utils.settings import (  # type: ignore
+        CNPJ_BASE_DIR,
+        SILVER_DIR,
+        SOCIOS_DOWNLOAD_PREFIXES,
+    )
 
 
 def _digits_only(s: str | None) -> str:
@@ -174,9 +183,11 @@ def run_prepare_socios(
     month: str | None = None,
     max_files: int = 3,
     index_url: str | None = None,
+    download_prefix: str | Iterable[str] | None = None,
 ) -> tuple[Path | None, Path | None]:
     """
     Baixa, extrai e gera os Parquets de sócios. Retorna caminhos (socios.parquet, socios_nomes.parquet).
+    `download_prefix` segue a semântica de `download_many`: None/"all" → todos os .zip.
     """
     target_month = month
     if not target_month:
@@ -186,23 +197,39 @@ def run_prepare_socios(
         target_month = months[-1]
         logger.info(f"Usando mês mais recente: {target_month}")
 
+    effective_prefix = download_prefix if download_prefix is not None else SOCIOS_DOWNLOAD_PREFIXES
+
     CNPJ_BASE_DIR.mkdir(parents=True, exist_ok=True)
-    month_dir = download_many(index_url, target_month, CNPJ_BASE_DIR, prefix="Socios", max_files=max_files)
+    month_dir = download_many(
+        index_url,
+        target_month,
+        CNPJ_BASE_DIR,
+        prefix=effective_prefix,
+        max_files=max_files,
+    )
 
-    zips = sorted(p for p in month_dir.glob("Socios*.zip") if p.is_file())
+    all_zips = sorted(p for p in month_dir.glob("*.zip") if p.is_file())
+    if not all_zips:
+        raise SystemExit("Nenhum arquivo .zip encontrado após download.")
+
+    all_extract_dir = month_dir / "extracted_all"
+    logger.info(f"Extraindo todos os CSVs disponíveis ({len(all_zips)} .zip) para {all_extract_dir}")
+    all_csvs = _extract_all(all_zips, all_extract_dir)
+    logger.info(f"Total de CSVs extraídos: {len(all_csvs)}")
+
+    socios_csvs = sorted((p for p in all_csvs if p.name.lower().startswith("socios")), key=lambda p: p.name)
+    logger.info(f"CSVs de sócios disponíveis após extração: {len(socios_csvs)}")
     if max_files >= 0:
-        zips = zips[:max_files]
+        socios_csvs = socios_csvs[:max_files]
 
-    if not zips:
+    if not socios_csvs:
         if max_files == 0:
             logger.info("max-files=0 -> nada a baixar ou preparar.")
             return None, None
-        raise SystemExit("Nenhum arquivo .zip de socios encontrado apos download.")
+        raise SystemExit("Nenhum CSV de socios encontrado apos a extração dos arquivos.")
 
-    extract_dir = month_dir / "extracted"
-    csvs = _extract_all(zips, extract_dir)
-
-    socios_por_cpf, socios_por_nome = build_socios_tables(csvs)
+    # Apenas os CSVs de Sócios são utilizados para montar as tabelas consumidas pelo pipeline.
+    socios_por_cpf, socios_por_nome = build_socios_tables(socios_csvs)
 
     SILVER_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -222,12 +249,18 @@ def main():
     parser.add_argument("--month", help="Mês AAAA-MM (ex.: 2024-09). Se não informado, pega o mais recente.", default=None)
     parser.add_argument("--max-files", type=int, default=3, help="Limita quantos zips de Sócios baixar (p/ teste rápido). Use -1 para todos.")
     parser.add_argument("--index-url", default=None, help="URL base do índice (deixe vazio para autodetectar)")
+    parser.add_argument(
+        "--download-prefix",
+        default=SOCIOS_DOWNLOAD_PREFIXES,
+        help="Prefixo(s) opcionais para download (ex.: 'Socios' ou 'Socios,Empresas'). Deixe vazio/'all' para todos.",
+    )
     args = parser.parse_args()
 
     run_prepare_socios(
         month=args.month,
         max_files=args.max_files,
         index_url=args.index_url,
+        download_prefix=args.download_prefix,
     )
 
 if __name__ == "__main__":

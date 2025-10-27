@@ -29,6 +29,8 @@ ENV           = os.getenv("ENV", "dev")
 USE_DUCKDB    = os.getenv("USE_DUCKDB", "1") in ("1", "true", "True")
 SCHEDULE_CRON = os.getenv("SCHEDULE_CRON", "0 3 * * *")
 SOCIOS_MAX_FILES = int(os.getenv("SOCIOS_MAX_FILES", "-1"))
+_SOCIOS_DOWNLOAD_PREFIXES_RAW = os.getenv("SOCIOS_DOWNLOAD_PREFIXES")
+SOCIOS_DOWNLOAD_PREFIXES = _SOCIOS_DOWNLOAD_PREFIXES_RAW.strip() if _SOCIOS_DOWNLOAD_PREFIXES_RAW else None
 CPF_SALT      = os.getenv("CPF_SALT")
 
 # Caminho direto para o Excel de egressos

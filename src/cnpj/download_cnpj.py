@@ -1,8 +1,8 @@
 """
-MÓDULO DE DOWNLOAD DOS ARQUIVOS DE SÓCIOS 
-===========================================
+MÓDULO DE DOWNLOAD DOS ARQUIVOS DO CNPJ
+=======================================
 
-Baixa os arquivos .zip do índice da RFB, com retries e logging.
+Baixa os arquivos .zip do índice da RFB (dados abertos CNPJ), com retries e logging.
 
 Autor: Pedro Henrique Lima Silva (essa parte é toda mérito do gpt)
 Data de criação: 15/10/2025
@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import re
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import List
 
@@ -113,28 +114,81 @@ def _natural_key(name: str) -> tuple:
     return tuple(key)
 
 
-def list_files(index_url: str | None, month: str, prefix: str = "Socios") -> List[str]:
+def _normalize_prefixes(prefixes: str | Iterable[str] | None) -> tuple[str, ...] | None:
     """
-    Lista nomes de arquivos dentro de AAAA-MM/ filtrando por prefixo (default: 'Socios').
-    Ex.: ['Socios0.zip', 'Socios1.zip', ...]
+    Normaliza o(s) prefixo(s) informado(s) para comparação case-insensitive.
+    Aceita:
+        - string única
+        - string com separadores ';' ou ','
+        - iterável de strings
+    Retorna tupla em lowercase ou None (equivalente a "todos").
+    """
+    if prefixes is None:
+        return None
+
+    raw_parts: list[str] = []
+    if isinstance(prefixes, str):
+        raw_parts = re.split(r"[;,]", prefixes)
+    else:
+        for item in prefixes:
+            if not item:
+                continue
+            if isinstance(item, str):
+                raw_parts.extend(re.split(r"[;,]", item))
+            else:
+                raw_parts.append(str(item))
+
+    cleaned: list[str] = []
+    for part in raw_parts:
+        if not part:
+            continue
+        token = part.strip()
+        if not token:
+            continue
+        if token.lower() in {"all", "todos", "*"}:
+            return None
+        cleaned.append(token.lower())
+
+    return tuple(cleaned) or None
+
+
+def list_files(index_url: str | None, month: str, prefix: str | Iterable[str] | None = None) -> List[str]:
+    """
+    Lista nomes de arquivos .zip dentro de AAAA-MM.
+    - Se `prefix` for None/"all", retorna todos os .zip.
+    - Se string (ou iterável), filtra pelos prefixos (case-insensitive).
     """
     url = _month_url(index_url, month)
     html = _get_text(url)
     files = sorted(set(re.findall(r'href=["\']([^"\']+\.zip)["\']', html)), key=_natural_key)
-    out = [f for f in files if f.startswith(prefix)]
-    if not out:
-        logger.warning(f"Nenhum arquivo com prefixo '{prefix}' em {url}")
-    return out
+
+    normalized = _normalize_prefixes(prefix)
+    if normalized:
+        files = [f for f in files if any(f.lower().startswith(p) for p in normalized)]
+        if not files:
+            logger.warning(f"Nenhum arquivo com prefixo(s) {normalized} em {url}")
+    elif not files:
+        logger.warning(f"Nenhum arquivo .zip encontrado em {url}")
+    return files
 
 
 # ----------------------------- CLI principal -----------------------------
 
-def download_many(index_url: str | None, month: str, out_dir: Path, prefix: str = "Socios", max_files: int = -1) -> Path:
+def download_many(
+    index_url: str | None,
+    month: str,
+    out_dir: Path,
+    prefix: str | Iterable[str] | None = None,
+    max_files: int = -1,
+) -> Path:
     """
-    Baixa os arquivos `prefix*.zip` do mês para `out_dir/AAAA-MM/`.
+    Baixa os arquivos .zip do mês para `out_dir/AAAA-MM/`.
+    Se `prefix` (string, iterável ou lista separada por vírgulas) for informado, baixa apenas os arquivos
+    que começam com os prefixos informados.
     max_files: -1 para todos; ou um inteiro para limitar (útil para testes).
     """
-    files = list_files(index_url, month, prefix=prefix)
+    normalized = _normalize_prefixes(prefix)
+    files = list_files(index_url, month, prefix=normalized)
     if max_files is not None and max_files >= 0:
         files = files[:max_files]
 
@@ -142,7 +196,10 @@ def download_many(index_url: str | None, month: str, out_dir: Path, prefix: str 
     month_dir.mkdir(parents=True, exist_ok=True)
 
     base = _month_url(index_url, month)
-    logger.info(f"Baixando {len(files)} arquivo(s) de {base} → {month_dir}")
+    detail = ""
+    if normalized:
+        detail = " com prefixo(s) " + ", ".join(normalized)
+    logger.info(f"Baixando {len(files)} arquivo(s){detail} de {base} → {month_dir}")
     for name in files:
         url = base + name
         dst = month_dir / name
@@ -155,11 +212,15 @@ def download_many(index_url: str | None, month: str, out_dir: Path, prefix: str 
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Baixa arquivos de Sócios (Dados Abertos CNPJ/RFB).")
+    ap = argparse.ArgumentParser(description="Baixa arquivos .zip do CNPJ (Dados Abertos RFB).")
     ap.add_argument("--index-url", default=None, help="URL base do índice (deixe vazio para autodetectar).")
     ap.add_argument("--month", default="latest", help="Mês AAAA-MM ou 'latest'.")
     ap.add_argument("--out", default="data/raw/cnpj", help="Diretório base de saída.")
-    ap.add_argument("--prefix", default="Socios", help="Prefixo de arquivo a baixar (padrão: Socios).")
+    ap.add_argument(
+        "--prefix",
+        default=None,
+        help="Prefixo(s) desejado(s). Aceita múltiplos separados por vírgula. Use 'all' para baixar todos.",
+    )
     ap.add_argument("--max-files", type=int, default=-1, help="-1 para todos; ou limite (ex.: 3).")
     args = ap.parse_args()
 

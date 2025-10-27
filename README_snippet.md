@@ -43,6 +43,6 @@ python -m src.etl.pipeline --excel "C:\\caminho\\egressos.xlsx"
 ```
 
 **Notas**
-- Os dados oficiais estao em `https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/` (mirror mantido pela RFB). O script faz fallback para `https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj/` se o host novo ficar fora e baixa apenas os arquivos **Socios*.zip** do mes.
+- Os dados oficiais estao em `https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/` (mirror mantido pela RFB). O script faz fallback para `https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj/` se o host novo ficar fora e, por padrão, baixa todos os arquivos `.zip` do mês (use `--prefix` ou a variável `.env` `SOCIOS_DOWNLOAD_PREFIXES` para restringir, ex.: `Socios`).
 - O Parquet de saída vai para `data/silver/socios.parquet` (CPF deduplicado) e `data/silver/socios_nomes.parquet` (nomes normalizados).
 - **LGPD**: mantenha `data/silver` fora do Git (já previsto no `.gitignore`). O join por CPF acontece só localmente; o **Power BI** recebe apenas o `id_pessoa` (hash do CPF) e a flag agregada `socio`.
