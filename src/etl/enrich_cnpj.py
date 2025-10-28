@@ -30,7 +30,11 @@ def _load_socios_base() -> pl.DataFrame | None:
     if not SOCIOS_PARQUET.exists():
         logger.warning("Arquivo socios.parquet não encontrado em %s", SOCIOS_PARQUET)
         return None
-    socios = pl.read_parquet(SOCIOS_PARQUET, columns=["cpf_fragment", "nome", "cnpj_basico"])
+    schema = pl.scan_parquet(SOCIOS_PARQUET).schema
+    columns = ["cpf_fragment", "nome", "cnpj_basico"]
+    if "data_entrada_sociedade" in schema:
+        columns.append("data_entrada_sociedade")
+    socios = pl.read_parquet(SOCIOS_PARQUET, columns=columns)
     socios = socios.filter(pl.col("cpf_fragment").is_not_null() & (pl.col("cpf_fragment") != ""))
     if socios.is_empty():
         logger.warning("Base de sócios encontrada, porém sem registros válidos de cpf_fragment.")
@@ -40,9 +44,15 @@ def _load_socios_base() -> pl.DataFrame | None:
         pl.col("nome").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_norm"),
         pl.col("cnpj_basico").cast(pl.Utf8),
     ])
-    socios = socios.select(["cpf_fragment", "nome_norm", "cnpj_basico"]).unique()
+    if "data_entrada_sociedade" in socios.columns:
+        socios = socios.with_columns(
+            pl.col("data_entrada_sociedade").cast(pl.Utf8).alias("data_associacao")
+        ).drop("data_entrada_sociedade")
+    else:
+        socios = socios.with_columns(pl.lit(None).cast(pl.Utf8).alias("data_associacao"))
+    socios = socios.select(["cpf_fragment", "nome_norm", "cnpj_basico", "data_associacao"]).unique()
     socios = socios.with_columns(
-        pl.struct(["nome_norm", "cnpj_basico"]).alias("socio_pair")
+        pl.struct(["nome_norm", "cnpj_basico", "data_associacao"]).alias("socio_pair")
     )
     grouped = (
         socios.group_by("cpf_fragment")
@@ -93,14 +103,17 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
             pl.lit(False).alias("socio_nome"),
             pl.lit(False).alias("socio"),
             pl.lit([], dtype=pl.List(pl.Utf8)).alias("cnpj_basico"),
-        ]).select(required_cols + ["socio_cpf", "socio_nome", "socio", "cnpj_basico"])
+            pl.lit([], dtype=pl.List(pl.Utf8)).alias("data_associacao"),
+        ]).select(required_cols + ["socio_cpf", "socio_nome", "socio", "cnpj_basico", "data_associacao"])
 
     df = df.with_columns(
         pl.col("cpf_limpo").map_elements(_middle_cpf_fragment, return_dtype=pl.Utf8).alias("cpf_fragment")
     )
 
     df = df.join(socios, on="cpf_fragment", how="left")
-    socio_pair_dtype = pl.List(pl.Struct({"nome_norm": pl.Utf8, "cnpj_basico": pl.Utf8}))
+    socio_pair_dtype = pl.List(
+        pl.Struct({"nome_norm": pl.Utf8, "cnpj_basico": pl.Utf8, "data_associacao": pl.Utf8})
+    )
     df = df.with_columns(
         pl.when(pl.col("socio_pairs").is_null())
         .then(pl.lit([], dtype=socio_pair_dtype))
@@ -112,23 +125,39 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col("socio_pairs").list.len().fill_null(0) > 0).alias("socio_cpf")
     )
 
-    def _matched_cnpjs(row: dict) -> list[str]:
+    def _matched_socios(row: dict) -> dict[str, list[str | None]]:
         nome = row.get("nome_norm") or ""
         pairs = row.get("socio_pairs") or []
         if not pairs or not nome:
-            return []
-        matched: list[str] = []
+            return {"cnpjs": [], "datas": []}
+        matched_cnpjs: list[str] = []
+        matched_datas: list[str | None] = []
         for pair in pairs:
             candidato = pair.get("nome_norm") or ""
             if _has_similar_name(nome, [candidato]):
-                matched.append(pair.get("cnpj_basico") or "")
-        return [cnpj for cnpj in matched if cnpj]
+                cnpj = pair.get("cnpj_basico") or ""
+                if cnpj:
+                    matched_cnpjs.append(cnpj)
+                    matched_datas.append(pair.get("data_associacao"))
+        return {"cnpjs": matched_cnpjs, "datas": matched_datas}
 
+    matched_dtype = pl.Struct(
+        {
+            "cnpjs": pl.List(pl.Utf8),
+            "datas": pl.List(pl.Utf8),
+        }
+    )
     df = df.with_columns(
         pl.struct(["nome_norm", "socio_pairs"]).map_elements(
-            _matched_cnpjs, return_dtype=pl.List(pl.Utf8)
-        ).alias("cnpj_basico")
+            _matched_socios, return_dtype=matched_dtype
+        ).alias("matched_socios")
     )
+
+    df = df.with_columns(
+        pl.col("matched_socios").struct.field("cnpjs").alias("cnpj_basico"),
+        pl.col("matched_socios").struct.field("datas").alias("data_associacao"),
+    )
+    df = df.drop("matched_socios")
 
     df = df.with_columns(
         (pl.col("cnpj_basico").list.len().fill_null(0) > 0).alias("socio_nome")
@@ -153,6 +182,7 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
         "socio_nome",
         "socio",
         "cnpj_basico",
+        "data_associacao",
     ]
 
     return df.select(output_cols)

@@ -262,6 +262,24 @@ def build_company_dataset(
             [pl.lit(None).cast(pl.Utf8).alias(column) for column in MATRIZ_COLUMNS_TO_EXPORT]
         )
 
+    if "data_inicio_atividade" in result.schema:
+        inicio_atividade_expr = pl.coalesce(
+            [
+                pl.col("data_inicio_atividade").str.strptime(pl.Date, format="%Y%m%d", strict=False),
+                pl.col("data_inicio_atividade").str.strptime(pl.Date, format="%Y-%m-%d", strict=False),
+            ]
+        )
+        result = result.with_columns(
+            inicio_atividade_expr
+            .dt.year()
+            .floordiv(10)
+            .mul(10)
+            .cast(pl.Int32)
+            .alias("decada_inicio_atividade")
+        )
+    else:
+        result = result.with_columns(pl.lit(None).cast(pl.Int32).alias("decada_inicio_atividade"))
+
     final_df = result.collect()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     final_df.write_parquet(output_path)
