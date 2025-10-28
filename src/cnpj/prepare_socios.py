@@ -30,7 +30,7 @@ try:
         CPF_SALT,
     )
     from ..utils.security import hash_identifier
-except ImportError:  # Execu��o direta (python src/cnpj/prepare_socios.py)
+except ImportError:  # Execu��o direta (python src/cnpj/prepare_socios.py)
     import sys
     from pathlib import Path as _Path
 
@@ -75,9 +75,9 @@ from loguru import logger
 
 def _extract_all(zips: list[Path], out_dir: Path, *, preserve_dirs: bool = False) -> list[Path]:
     """
-    Extrai todos os arquivos de cada zip. Se j� houver CSVs extra�dos previamente,
+    Extrai todos os arquivos de cada zip. Se já houver CSVs extraídos previamente,
     reaproveita-os e evita trabalho repetido. Quando extrai algo novo, renomeia para
-    <nome_do_zip>.csv, adicionando sufixos __2, __3... quando necess�rio.
+    <nome_do_zip>.csv, adicionando sufixos __2, __3... quando necessário.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
@@ -92,7 +92,7 @@ def _extract_all(zips: list[Path], out_dir: Path, *, preserve_dirs: bool = False
 
         existing = [p for p in _existing_csvs() if p.name.lower().startswith(base.lower())]
         if existing:
-            logger.info("Pulando extra��o (j� encontrado): %s", ", ".join(str(p) for p in existing))
+            logger.info("Pulando extração (já encontrado): %s", ", ".join(str(p) for p in existing))
             extracted.extend(existing)
             continue
 
@@ -125,10 +125,10 @@ def _extract_all(zips: list[Path], out_dir: Path, *, preserve_dirs: bool = False
     if not extracted:
         fallback = _existing_csvs()
         if fallback:
-            logger.info("Reutilizando %d CSVs j� presentes em %s", len(fallback), out_dir)
+            logger.info("Reutilizando %d CSVs já presentes em %s", len(fallback), out_dir)
             extracted.extend(fallback)
 
-    logger.info(f"Arquivos extra�dos: {len(extracted)}")
+    logger.info(f"Arquivos extraídos: {len(extracted)}")
     return extracted
 
 
