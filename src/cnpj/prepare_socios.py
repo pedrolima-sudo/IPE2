@@ -1,3 +1,4 @@
+# -*- coding: latin-1 -*-
 """
 MÓDULO DE PREPARAÇÃO DOS DADOS DE SÓCIOS
 ========================================================
@@ -19,24 +20,29 @@ import polars as pl
 from loguru import logger
 from unidecode import unidecode
 
+
 try:
     from .download_cnpj import list_months, download_many
     from ..utils.settings import (
         CNPJ_BASE_DIR,
         SILVER_DIR,
         SOCIOS_DOWNLOAD_PREFIXES,
+        CPF_SALT,
     )
-except ImportError:  # Execução direta (python src/cnpj/prepare_socios.py)
+    from ..utils.security import hash_identifier
+except ImportError:  # Execu��o direta (python src/cnpj/prepare_socios.py)
     import sys
     from pathlib import Path as _Path
 
     sys.path.append(str(_Path(__file__).resolve().parents[2]))
     from src.cnpj.download_cnpj import list_months, download_many  # type: ignore
-    from src.utils.settings import (  # type: ignore
+    from src.utils.settings import (
         CNPJ_BASE_DIR,
         SILVER_DIR,
         SOCIOS_DOWNLOAD_PREFIXES,
+        CPF_SALT,
     )
+    from src.utils.security import hash_identifier
 
 
 def _digits_only(s: str | None) -> str:
@@ -69,55 +75,61 @@ from loguru import logger
 
 def _extract_all(zips: list[Path], out_dir: Path, *, preserve_dirs: bool = False) -> list[Path]:
     """
-    Extrai todos os arquivos de cada zip, renomeando os CSVs para <nome_do_zip>.csv.
-    Se um zip contiver múltiplos arquivos de dados, recebe sufixos __2, __3, ...
+    Extrai todos os arquivos de cada zip. Se j� houver CSVs extra�dos previamente,
+    reaproveita-os e evita trabalho repetido. Quando extrai algo novo, renomeia para
+    <nome_do_zip>.csv, adicionando sufixos __2, __3... quando necess�rio.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    extraidos: list[Path] = []
+    extracted: list[Path] = []
 
-    for z in zips:
-        logger.info(f"Extraindo: {z}")
-        zip_stem = z.stem
+    def _existing_csvs() -> list[Path]:
+        return list(out_dir.rglob("*.csv")) if preserve_dirs else list(out_dir.glob("*.csv"))
+
+    for zip_path in zips:
+        logger.info(f"Extraindo: {zip_path}")
+        base = zip_path.stem
         emitted = 0
-        with zipfile.ZipFile(z, "r") as zf:
-            if preserve_dirs:
-                zf.extractall(out_dir)
-                for info in zf.infolist():
-                    if info.is_dir():
-                        continue
-                    emitted += 1
-                    base_name = zip_stem if emitted == 1 else f"{zip_stem}__{emitted}"
-                    target = out_dir / info.filename
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    desired = target.with_name(f"{base_name}.csv")
-                    if desired != target:
-                        if desired.exists():
-                            desired.unlink()
-                        target.rename(desired)
-                        target = desired
-                    extraidos.append(target)
-            else:
-                # achata: coloca tudo direto em out_dir
-                for info in zf.infolist():
-                    if info.is_dir():
-                        continue
-                    emitted += 1
-                    base_name = zip_stem if emitted == 1 else f"{zip_stem}__{emitted}"
-                    target = out_dir / f"{base_name}.csv"
 
-                    # evita path traversal (zip slip)
-                    out_res = out_dir.resolve()
-                    tgt_parent = target.resolve().parent
-                    if tgt_parent != out_res and out_res not in tgt_parent.parents:
-                        raise ValueError("caminho inseguro dentro do zip")
+        existing = [p for p in _existing_csvs() if p.name.lower().startswith(base.lower())]
+        if existing:
+            logger.info("Pulando extra��o (j� encontrado): %s", ", ".join(str(p) for p in existing))
+            extracted.extend(existing)
+            continue
 
-                    with zf.open(info) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                emitted += 1
+                target_name = base if emitted == 1 else f"{base}__{emitted}"
+                if preserve_dirs:
+                    raw_target = out_dir / info.filename
+                    raw_target.parent.mkdir(parents=True, exist_ok=True)
+                    target = raw_target.with_name(f"{target_name}.csv")
+                else:
+                    target = out_dir / f"{target_name}.csv"
 
-                    extraidos.append(target)
+                out_root = out_dir.resolve()
+                tgt_parent = target.resolve().parent
+                if tgt_parent != out_root and out_root not in tgt_parent.parents:
+                    raise ValueError("caminho inseguro dentro do zip")
 
-    logger.info(f"Arquivos extraidos: {len(extraidos)}")
-    return extraidos
+                if target.exists():
+                    target.unlink()
+
+                with zf.open(info) as src, target.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
+                extracted.append(target)
+
+    if not extracted:
+        fallback = _existing_csvs()
+        if fallback:
+            logger.info("Reutilizando %d CSVs j� presentes em %s", len(fallback), out_dir)
+            extracted.extend(fallback)
+
+    logger.info(f"Arquivos extra�dos: {len(extracted)}")
+    return extracted
 
 
 
@@ -175,16 +187,32 @@ def build_socios_tables(csvs: list[Path]) -> tuple[pl.DataFrame, pl.DataFrame]:
         logger.error(f"Colunas esperadas não encontradas. Existem: {df.columns}")
         raise SystemExit("Layout de sócios inesperado — ajuste os aliases no script.")
 
-    df = df.select([
+    col_cnpj = next((c for c in df.columns if c in {"cnpj_basico", "cnpj"}), None)
+
+    selected_exprs = [
         pl.col(col_nome).alias("nome"),
         pl.col(col_id).alias("identificador"),
-        pl.col(col_doc).alias("doc")
-    ])
+        pl.col(col_doc).alias("doc"),
+    ]
+    if col_cnpj:
+        selected_exprs.insert(0, pl.col(col_cnpj).alias("cnpj_basico"))
+    else:
+        selected_exprs.insert(0, pl.lit(None).alias("cnpj_basico"))
+
+    df = df.select(selected_exprs)
 
     df = df.with_columns([
         pl.col("identificador").cast(pl.Utf8),
         pl.col("doc").map_elements(_digits_only).alias("doc_digits"),
         pl.col("nome").map_elements(_normalize_name).alias("nome_normalizado"),
+        pl.col("cnpj_basico").cast(pl.Utf8).alias("cnpj_basico"),
+    ])
+
+    df = df.with_columns([
+        pl.col("doc_digits").map_elements(
+            lambda v: hash_identifier(v, CPF_SALT) if v else "",
+            return_dtype=pl.Utf8,
+        ).alias("hash_documento_socio"),
     ])
 
     df_pf = df.filter(
@@ -203,16 +231,29 @@ def build_socios_tables(csvs: list[Path]) -> tuple[pl.DataFrame, pl.DataFrame]:
         df_pf.select([
             pl.col("cpf_fragment"),
             pl.col("nome_normalizado").alias("nome"),
+            pl.col("cnpj_basico"),
+            pl.col("hash_documento_socio"),
         ])
-             .unique(maintain_order=False)
-             .sort(["cpf_fragment", "nome"])
+        .filter(pl.col("cpf_fragment") != "")
+        .unique(maintain_order=False)
+        .sort(["cpf_fragment", "cnpj_basico", "nome"])
     )
 
     socios_por_nome = (
-        df.select([pl.col("nome_normalizado").alias("nome")])
-          .filter(pl.col("nome") != "")
-          .unique(maintain_order=False)
-          .sort("nome")
+        df.select([
+            pl.col("nome_normalizado").alias("nome"),
+            pl.col("cnpj_basico"),
+        ])
+        .filter(pl.col("nome") != "")
+        .group_by("nome")
+        .agg(pl.col("cnpj_basico").drop_nulls().unique().alias("cnpj_basicos"))
+        .with_columns(
+            pl.when(pl.col("cnpj_basicos").list.len() == 1)
+            .then(pl.col("cnpj_basicos").list.first())
+            .otherwise(None)
+            .alias("cnpj_basico")
+        )
+        .sort("nome")
     )
 
     return socios_por_cpf, socios_por_nome
