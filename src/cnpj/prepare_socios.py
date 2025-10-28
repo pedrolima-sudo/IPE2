@@ -13,6 +13,8 @@ Data de criação: 15/10/2025
 from __future__ import annotations
 import zipfile
 import argparse
+import hashlib
+import json
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -315,11 +317,20 @@ def run_prepare_socios(
 
     out_cpf = SILVER_DIR / "socios.parquet"
     socios_por_cpf.write_parquet(out_cpf)
-    logger.success(f"Gerado: {out_cpf}  (CPFs únicos: {socios_por_cpf.height})")
+    logger.success(f"Gerado: {out_cpf}  (CPFs unicos: {socios_por_cpf.height})")
 
     out_nome = SILVER_DIR / "socios_nomes.parquet"
     socios_por_nome.write_parquet(out_nome)
-    logger.success(f"Gerado: {out_nome} (nomes únicos: {socios_por_nome.height})")
+    logger.success(f"Gerado: {out_nome} (nomes unicos: {socios_por_nome.height})")
+
+    meta = {
+        "cpf_salt_sha256": hashlib.sha256(CPF_SALT.encode("utf-8")).hexdigest(),
+        "source_month": target_month,
+        "max_files": max_files,
+    }
+    meta_path = SILVER_DIR / "socios_meta.json"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(f"Metadados registrados em: {meta_path}")
 
     return out_cpf, out_nome
 
