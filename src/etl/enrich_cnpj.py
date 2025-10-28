@@ -30,7 +30,7 @@ def _load_socios_base() -> pl.DataFrame | None:
     if not SOCIOS_PARQUET.exists():
         logger.warning("Arquivo socios.parquet não encontrado em %s", SOCIOS_PARQUET)
         return None
-    socios = pl.read_parquet(SOCIOS_PARQUET, columns=["cpf_fragment", "nome"])
+    socios = pl.read_parquet(SOCIOS_PARQUET, columns=["cpf_fragment", "nome", "cnpj_basico"])
     socios = socios.filter(pl.col("cpf_fragment").is_not_null() & (pl.col("cpf_fragment") != ""))
     if socios.is_empty():
         logger.warning("Base de sócios encontrada, porém sem registros válidos de cpf_fragment.")
@@ -38,10 +38,17 @@ def _load_socios_base() -> pl.DataFrame | None:
     socios = socios.with_columns([
         pl.col("cpf_fragment").cast(pl.Utf8),
         pl.col("nome").map_elements(normalize_name, return_dtype=pl.Utf8).alias("nome_norm"),
+        pl.col("cnpj_basico").cast(pl.Utf8),
     ])
+    socios = socios.select(["cpf_fragment", "nome_norm", "cnpj_basico"]).unique()
+    socios = socios.with_columns(
+        pl.struct(["nome_norm", "cnpj_basico"]).alias("socio_pair")
+    )
     grouped = (
         socios.group_by("cpf_fragment")
-        .agg(pl.col("nome_norm").drop_nulls().unique().alias("socios_nomes_norm"))
+        .agg([
+            pl.col("socio_pair").alias("socio_pairs"),
+        ])
     )
     return grouped
 
@@ -85,34 +92,46 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
             pl.lit(False).alias("socio_cpf"),
             pl.lit(False).alias("socio_nome"),
             pl.lit(False).alias("socio"),
-        ]).select(required_cols + ["socio_cpf", "socio_nome", "socio"])
+            pl.lit([], dtype=pl.List(pl.Utf8)).alias("cnpj_basico"),
+        ]).select(required_cols + ["socio_cpf", "socio_nome", "socio", "cnpj_basico"])
 
     df = df.with_columns(
         pl.col("cpf_limpo").map_elements(_middle_cpf_fragment, return_dtype=pl.Utf8).alias("cpf_fragment")
     )
 
     df = df.join(socios, on="cpf_fragment", how="left")
+    socio_pair_dtype = pl.List(pl.Struct({"nome_norm": pl.Utf8, "cnpj_basico": pl.Utf8}))
     df = df.with_columns(
-        pl.when(pl.col("socios_nomes_norm").is_null())
-        .then(pl.lit([], dtype=pl.List(pl.Utf8)))
-        .otherwise(pl.col("socios_nomes_norm"))
-        .alias("socios_nomes_norm")
+        pl.when(pl.col("socio_pairs").is_null())
+        .then(pl.lit([], dtype=socio_pair_dtype))
+        .otherwise(pl.col("socio_pairs"))
+        .alias("socio_pairs")
     )
 
     df = df.with_columns(
-        (pl.col("socios_nomes_norm").list.len().fill_null(0) > 0).alias("socio_cpf")
+        (pl.col("socio_pairs").list.len().fill_null(0) > 0).alias("socio_cpf")
     )
 
-    def _map_name_match(row: dict) -> bool:
-        nomes = row.get("socios_nomes_norm") or []
-        if not nomes:
-            return False
-        return _has_similar_name(row.get("nome_norm") or "", nomes)
+    def _matched_cnpjs(row: dict) -> list[str]:
+        nome = row.get("nome_norm") or ""
+        pairs = row.get("socio_pairs") or []
+        if not pairs or not nome:
+            return []
+        matched: list[str] = []
+        for pair in pairs:
+            candidato = pair.get("nome_norm") or ""
+            if _has_similar_name(nome, [candidato]):
+                matched.append(pair.get("cnpj_basico") or "")
+        return [cnpj for cnpj in matched if cnpj]
 
     df = df.with_columns(
-        pl.struct(["nome_norm", "socios_nomes_norm"]).map_elements(
-            _map_name_match, return_dtype=pl.Boolean
-        ).alias("socio_nome")
+        pl.struct(["nome_norm", "socio_pairs"]).map_elements(
+            _matched_cnpjs, return_dtype=pl.List(pl.Utf8)
+        ).alias("cnpj_basico")
+    )
+
+    df = df.with_columns(
+        (pl.col("cnpj_basico").list.len().fill_null(0) > 0).alias("socio_nome")
     )
 
     df = df.with_columns((pl.col("socio_cpf") & pl.col("socio_nome")).alias("socio"))
@@ -133,6 +152,7 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
         "socio_cpf",
         "socio_nome",
         "socio",
+        "cnpj_basico",
     ]
 
     return df.select(output_cols)
