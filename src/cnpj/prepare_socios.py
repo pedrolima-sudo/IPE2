@@ -62,24 +62,63 @@ def _cpf_fragment_from_digits(d: str | None) -> str:
     return ""
 
 
-def _extract_all(zips: list[Path], out_dir: Path) -> list[Path]:
+from pathlib import Path
+import zipfile
+import shutil  # para copyfileobj
+from loguru import logger
+
+def _extract_all(zips: list[Path], out_dir: Path, *, preserve_dirs: bool = False) -> list[Path]:
+    """
+    Extrai todos os arquivos de cada zip, renomeando os CSVs para <nome_do_zip>.csv.
+    Se um zip contiver múltiplos arquivos de dados, recebe sufixos __2, __3, ...
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    csvs: list[Path] = []
+    extraidos: list[Path] = []
+
     for z in zips:
         logger.info(f"Extraindo: {z}")
+        zip_stem = z.stem
+        emitted = 0
         with zipfile.ZipFile(z, "r") as zf:
-            for member in zf.namelist():
-                lower = member.lower()
-                if lower.endswith(".csv") or lower.endswith(".sociocsv"):
-                    name = Path(member).name
-                    if lower.endswith(".sociocsv"):
-                        name = f"{Path(name).stem}.csv"
-                    target = out_dir / name
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
-                    csvs.append(target)
-    logger.info(f"CSVs extraídos: {len(csvs)}")
-    return csvs
+            if preserve_dirs:
+                zf.extractall(out_dir)
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    emitted += 1
+                    base_name = zip_stem if emitted == 1 else f"{zip_stem}__{emitted}"
+                    target = out_dir / info.filename
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    desired = target.with_name(f"{base_name}.csv")
+                    if desired != target:
+                        if desired.exists():
+                            desired.unlink()
+                        target.rename(desired)
+                        target = desired
+                    extraidos.append(target)
+            else:
+                # achata: coloca tudo direto em out_dir
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    emitted += 1
+                    base_name = zip_stem if emitted == 1 else f"{zip_stem}__{emitted}"
+                    target = out_dir / f"{base_name}.csv"
+
+                    # evita path traversal (zip slip)
+                    out_res = out_dir.resolve()
+                    tgt_parent = target.resolve().parent
+                    if tgt_parent != out_res and out_res not in tgt_parent.parents:
+                        raise ValueError("caminho inseguro dentro do zip")
+
+                    with zf.open(info) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+                    extraidos.append(target)
+
+    logger.info(f"Arquivos extraidos: {len(extraidos)}")
+    return extraidos
+
 
 
 def build_socios_tables(csvs: list[Path]) -> tuple[pl.DataFrame, pl.DataFrame]:
