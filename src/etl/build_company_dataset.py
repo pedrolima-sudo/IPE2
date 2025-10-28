@@ -66,6 +66,14 @@ SIMPLES_COLUMNS: Sequence[str] = (
     "data_exclusao_mei",
 )
 
+MATRIZ_COLUMNS_TO_EXPORT: Sequence[str] = (
+    "situacao_cadastral",
+    "data_inicio_atividade",
+    "uf",
+    "cnae_fiscal_principal",
+    "cnae_fiscal_secundaria",
+)
+
 
 @dataclass(slots=True)
 class ExtractPaths:
@@ -239,6 +247,20 @@ def build_company_dataset(
         result = result.join(estabelecimentos_all.lazy(), on="cnpj_basico", how="left")
     if not estabelecimentos_matriz.is_empty():
         result = result.join(estabelecimentos_matriz.lazy(), on="cnpj_basico", how="left")
+
+    if "estabelecimento_matriz" in result.schema:
+        result = result.with_columns(
+            [
+                pl.col("estabelecimento_matriz")
+                .struct.field(column)
+                .alias(column)
+                for column in MATRIZ_COLUMNS_TO_EXPORT
+            ]
+        )
+    else:
+        result = result.with_columns(
+            [pl.lit(None).cast(pl.Utf8).alias(column) for column in MATRIZ_COLUMNS_TO_EXPORT]
+        )
 
     final_df = result.collect()
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,7 @@ from .ingest_excel import read_egressos_excel
 from .transform import basic_transform
 from .enrich_cnpj import mark_founders
 from .export_powerbi import export_parquet
+from .build_company_dataset import build_company_dataset
 from ..utils.settings import EGRESSO_EXCEL_FILE
 
 
@@ -45,7 +46,13 @@ def run_pipeline(excel_path: str | None) -> Path:
     df_out = df.select(cols)
 
     out_dir = export_parquet(df_out)
-    logger.success(f"Pipeline concluído. Saída em: {out_dir}")
+
+    egressos_parquet = out_dir / "egressos.parquet"
+    empresas_parquet = build_company_dataset(egressos_parquet=egressos_parquet)
+
+    logger.success(
+        f"Pipeline concluído. Saída egressos: {out_dir} | Parquet empresas: {empresas_parquet}"
+    )
     return out_dir
 
 
