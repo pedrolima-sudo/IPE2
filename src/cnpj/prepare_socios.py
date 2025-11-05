@@ -11,12 +11,14 @@ Data de criação: 15/10/2025
 Última modificação: 18/10/2025
 """
 from __future__ import annotations
-import zipfile
 import argparse
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from pathlib import Path
+import shutil  # para copyfileobj
+import zipfile
 
 import polars as pl
 from loguru import logger
@@ -70,10 +72,55 @@ def _cpf_fragment_from_digits(d: str | None) -> str:
     return ""
 
 
-from pathlib import Path
-import zipfile
-import shutil  # para copyfileobj
-from loguru import logger
+_MONTH_DIR_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+_PREFIX_SPLIT_PATTERN = re.compile(r"[;,]")
+
+
+def _normalize_prefix_tokens(prefixes: str | Iterable[str] | None) -> tuple[str, ...] | None:
+    """
+    Replica a normaliza��o usada no downloader para reutiliza��o offline.
+    Converte para lowercase e trata 'all'/'todos' como None.
+    """
+    if prefixes is None:
+        return None
+
+    raw_parts: list[str] = []
+    if isinstance(prefixes, str):
+        raw_parts = _PREFIX_SPLIT_PATTERN.split(prefixes)
+    else:
+        for item in prefixes:
+            if not item:
+                continue
+            if isinstance(item, str):
+                raw_parts.extend(_PREFIX_SPLIT_PATTERN.split(item))
+            else:
+                raw_parts.append(str(item))
+
+    cleaned: list[str] = []
+    for part in raw_parts:
+        token = part.strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in {"all", "todos", "*"}:
+            return None
+        cleaned.append(lowered)
+
+    return tuple(cleaned) or None
+
+
+def _list_local_months(base_dir: Path) -> list[str]:
+    """Lista diret��rios AAAA-MM jǭ baixados localmente."""
+    if not base_dir.exists():
+        return []
+    try:
+        entries = base_dir.iterdir()
+    except OSError as err:
+        logger.debug("Falha ao listar diret��rio local %s: %s", base_dir, err)
+        return []
+    months = sorted(p.name for p in entries if p.is_dir() and _MONTH_DIR_PATTERN.match(p.name))
+    return months
+
 
 def _extract_all(zips: list[Path], out_dir: Path, *, preserve_dirs: bool = False) -> list[Path]:
     """
@@ -268,39 +315,92 @@ def run_prepare_socios(
     download_prefix: str | Iterable[str] | None = None,
 ) -> tuple[Path | None, Path | None]:
     """
-    Baixa, extrai e gera os Parquets de sócios. Retorna caminhos (socios.parquet, socios_nomes.parquet).
-    `download_prefix` segue a semântica de `download_many`: None/"all" → todos os .zip.
+    Baixa, extrai e gera os Parquets de socios. Retorna caminhos (socios.parquet, socios_nomes.parquet).
+    `download_prefix` segue a semantica de `download_many`: None/"all" -> todos os .zip.
     """
     target_month = month
+    online_error: Exception | None = None
     if not target_month:
-        months = list_months(index_url)
-        if not months:
-            raise SystemExit("Nenhum mês encontrado.")
-        target_month = months[-1]
-        logger.info(f"Usando mês mais recente: {target_month}")
+        months: list[str] = []
+        try:
+            months = list_months(index_url)
+        except Exception as err:
+            online_error = err
+            logger.warning(
+                f"Falha ao consultar o indice do CNPJ ({err}). Tentando meses ja baixados em {CNPJ_BASE_DIR}."
+            )
+        if months:
+            target_month = months[-1]
+            logger.info(f"Usando mes mais recente do indice: {target_month}")
+        else:
+            local_months = _list_local_months(CNPJ_BASE_DIR)
+            if not local_months:
+                msg = "Nenhum mes disponivel (indice indisponivel e cache local vazio)."
+                if online_error:
+                    raise RuntimeError(msg) from online_error
+                raise SystemExit(msg)
+            target_month = local_months[-1]
+            logger.info(f"Sem acesso ao indice; usando mes local mais recente: {target_month}")
+
+    if not target_month:
+        raise SystemExit("Mes alvo nao definido.")
 
     effective_prefix = download_prefix if download_prefix is not None else SOCIOS_DOWNLOAD_PREFIXES
+    normalized_prefix = _normalize_prefix_tokens(effective_prefix)
+    prefix_desc = "todos" if normalized_prefix is None else ", ".join(normalized_prefix)
 
     CNPJ_BASE_DIR.mkdir(parents=True, exist_ok=True)
-    month_dir = download_many(
-        index_url,
-        target_month,
-        CNPJ_BASE_DIR,
-        prefix=effective_prefix,
-        max_files=max_files,
-    )
+    month_dir = CNPJ_BASE_DIR / target_month
+    month_dir.mkdir(parents=True, exist_ok=True)
 
-    all_zips = sorted(p for p in month_dir.glob("*.zip") if p.is_file())
+    download_error: Exception | None = None
+    if online_error is None:
+        try:
+            month_dir = download_many(
+                index_url,
+                target_month,
+                CNPJ_BASE_DIR,
+                prefix=effective_prefix,
+                max_files=max_files,
+            )
+        except Exception as err:
+            download_error = err
+            logger.warning(
+                f"Falha ao baixar arquivos de {target_month} ({err}). Reutilizando arquivos locais em {month_dir}."
+            )
+    else:
+        logger.info(
+            f"Pulando download online de {target_month} (indice indisponivel). Reutilizando cache local."
+        )
+
+    all_zips = sorted(p for p in month_dir.glob('*.zip') if p.is_file())
+    if normalized_prefix:
+        all_zips = [p for p in all_zips if any(p.name.lower().startswith(pref) for pref in normalized_prefix)]
+
     if not all_zips:
-        raise SystemExit("Nenhum arquivo .zip encontrado após download.")
+        if max_files == 0:
+            logger.info("max-files=0 -> nada a baixar ou preparar.")
+            return None, None
+        base_msg = f"Nenhum arquivo .zip compativel (prefixo: {prefix_desc}) encontrado em {month_dir}."
+        if download_error:
+            raise SystemExit(f"{base_msg} Falha no download: {download_error}") from download_error
+        if online_error:
+            raise SystemExit(f"{base_msg} Indice indisponivel.") from online_error
+        raise SystemExit(base_msg)
 
-    all_extract_dir = month_dir / "extracted_all"
-    logger.info(f"Extraindo todos os CSVs disponíveis ({len(all_zips)} .zip) para {all_extract_dir}")
+    if max_files is not None and max_files >= 0:
+        all_zips = all_zips[:max_files]
+
+    if download_error or online_error:
+        logger.info(f"Reutilizando {len(all_zips)} arquivo(s) ja presente(s) em {month_dir}.")
+
+    all_extract_dir = month_dir / 'extracted_all'
+    logger.info(f"Extraindo todos os CSVs disponiveis ({len(all_zips)} .zip) para {all_extract_dir}")
     all_csvs = _extract_all(all_zips, all_extract_dir)
-    logger.info(f"Total de CSVs extraídos: {len(all_csvs)}")
+    logger.info(f"Total de CSVs extraidos: {len(all_csvs)}")
 
-    socios_csvs = sorted((p for p in all_csvs if p.name.lower().startswith("socios")), key=lambda p: p.name)
-    logger.info(f"CSVs de sócios disponíveis após extração: {len(socios_csvs)}")
+    socios_csvs = sorted((p for p in all_csvs if p.name.lower().startswith('socios')), key=lambda p: p.name)
+    logger.info(f"CSVs de socios disponiveis apos extracao: {len(socios_csvs)}")
     if max_files >= 0:
         socios_csvs = socios_csvs[:max_files]
 
@@ -308,28 +408,28 @@ def run_prepare_socios(
         if max_files == 0:
             logger.info("max-files=0 -> nada a baixar ou preparar.")
             return None, None
-        raise SystemExit("Nenhum CSV de socios encontrado apos a extração dos arquivos.")
+        raise SystemExit("Nenhum CSV de socios encontrado apos a extracao dos arquivos.")
 
-    # Apenas os CSVs de Sócios são utilizados para montar as tabelas consumidas pelo pipeline.
+    # Apenas os CSVs de socios sao utilizados para montar as tabelas consumidas pelo pipeline.
     socios_por_cpf, socios_por_nome = build_socios_tables(socios_csvs)
 
     SILVER_DIR.mkdir(parents=True, exist_ok=True)
 
-    out_cpf = SILVER_DIR / "socios.parquet"
+    out_cpf = SILVER_DIR / 'socios.parquet'
     socios_por_cpf.write_parquet(out_cpf)
     logger.success(f"Gerado: {out_cpf}  (CPFs unicos: {socios_por_cpf.height})")
 
-    out_nome = SILVER_DIR / "socios_nomes.parquet"
+    out_nome = SILVER_DIR / 'socios_nomes.parquet'
     socios_por_nome.write_parquet(out_nome)
     logger.success(f"Gerado: {out_nome} (nomes unicos: {socios_por_nome.height})")
 
     meta = {
-        "cpf_salt_sha256": hashlib.sha256(CPF_SALT.encode("utf-8")).hexdigest(),
-        "source_month": target_month,
-        "max_files": max_files,
+        'cpf_salt_sha256': hashlib.sha256(CPF_SALT.encode('utf-8')).hexdigest(),
+        'source_month': target_month,
+        'max_files': max_files,
     }
-    meta_path = SILVER_DIR / "socios_meta.json"
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    meta_path = SILVER_DIR / 'socios_meta.json'
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
     logger.info(f"Metadados registrados em: {meta_path}")
 
     return out_cpf, out_nome

@@ -138,7 +138,10 @@ def _read_filtered_csv(
             .join(targets_lazy, on="cnpj_basico", how="inner")
         )
         frames.append(scan)
-    return pl.concat(frames).collect() if frames else pl.DataFrame()
+    if not frames:
+        return pl.DataFrame()
+    # Use streaming execution to avoid keeping every arquivo residente em memória.
+    return pl.concat(frames).collect(streaming=True)
 
 
 def _load_empresas(paths: Sequence[Path], targets_lazy: pl.LazyFrame) -> pl.DataFrame:

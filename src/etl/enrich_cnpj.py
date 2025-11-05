@@ -30,7 +30,7 @@ def _load_socios_base() -> pl.DataFrame | None:
     if not SOCIOS_PARQUET.exists():
         logger.warning("Arquivo socios.parquet não encontrado em %s", SOCIOS_PARQUET)
         return None
-    schema = pl.scan_parquet(SOCIOS_PARQUET).schema
+    schema = pl.scan_parquet(SOCIOS_PARQUET).collect_schema()
     columns = ["cpf_fragment", "nome", "cnpj_basico"]
     if "data_entrada_sociedade" in schema:
         columns.append("data_entrada_sociedade")
