@@ -134,6 +134,7 @@ def _read_filtered_csv(
                 schema_overrides={col: pl.Utf8 for col in columns},
                 ignore_errors=True,
                 encoding="utf8-lossy",
+                quote_char=None,
             )
             .join(targets_lazy, on="cnpj_basico", how="inner")
         )

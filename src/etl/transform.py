@@ -33,14 +33,24 @@ def _clean_cpf(s: str) -> str:
     return ""
 
 
-def _calc_idade(nasc: date | None) -> int | None:
+def _calc_idade(nasc: date | None, ref: date | None = None) -> int | None:
     if not nasc:
         return None
     try:
-        today = date.today()
-        return relativedelta(today, nasc).years
+        ref_date = ref or date.today()
+        if not ref_date:
+            return None
+        return relativedelta(ref_date, nasc).years
     except Exception:
         return None
+
+
+def _calc_idade_ingresso(row: dict) -> int | None:
+    return _calc_idade(row.get("dn_date"), row.get("di_date"))
+
+
+def _calc_idade_conclusao(row: dict) -> int | None:
+    return _calc_idade(row.get("dn_date"), row.get("df_date"))
 
 
 def _faixa_etaria(idade: int | None) -> str:
@@ -76,11 +86,29 @@ def basic_transform(df: pl.DataFrame) -> pl.DataFrame:
     ])
 
     # data de nascimento (cast seguro) → idade e faixa
-    df = df.with_columns([
+    date_cols = [
         pl.col("data_nascimento").cast(pl.Date, strict=False).alias("dn_date"),
-    ])
+    ]
+    if "data_ingresso" in df.columns:
+        date_cols.append(pl.col("data_ingresso").cast(pl.Date, strict=False).alias("di_date"))
+    else:
+        date_cols.append(pl.lit(None).cast(pl.Date).alias("di_date"))
+    if "data_formacao" in df.columns:
+        date_cols.append(pl.col("data_formacao").cast(pl.Date, strict=False).alias("df_date"))
+    else:
+        date_cols.append(pl.lit(None).cast(pl.Date).alias("df_date"))
+
+    df = df.with_columns(date_cols)
     df = df.with_columns([
         pl.col("dn_date").map_elements(_calc_idade, return_dtype=pl.Int64).alias("idade"),
+    ])
+    df = df.with_columns([
+        pl.struct(["dn_date", "di_date"]).map_elements(
+            _calc_idade_ingresso, return_dtype=pl.Int64
+        ).alias("idade_ingresso"),
+        pl.struct(["dn_date", "df_date"]).map_elements(
+            _calc_idade_conclusao, return_dtype=pl.Int64
+        ).alias("idade_conclusao"),
     ])
     df = df.with_columns([
         pl.col("idade").map_elements(_faixa_etaria, return_dtype=pl.Utf8).alias("faixa_etaria"),

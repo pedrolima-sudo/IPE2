@@ -71,10 +71,10 @@ def run_pipeline(excel_path: str | None) -> Path:
     # selecione apenas colunas úteis ao BI (ajuste conforme necessário)
     cols = [
         "id_pessoa", "matricula", "nome", "nome_norm",
-        "idade", "faixa_etaria",
+        "idade", "idade_ingresso", "idade_conclusao", "faixa_etaria",
         "data_nascimento", "data_ingresso", "data_formacao",
         "ultimo_curso", "nivel", "codigo_curso",
-        "socio_cpf", "socio_nome", "socio", "cnpj_basico", "data_associacao",
+        "socio_cpf", "socio_nome", "socio", "cnpj_basico", "data_associacao", "datas_associacao", "data_associacao_primeira", "datas_associacao_por_empresa",
         "decada_inicio_curso", "decada_conclusao_curso",
     ]
     cols = [c for c in cols if c in df.columns]

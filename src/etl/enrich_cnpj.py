@@ -10,10 +10,16 @@ from loguru import logger
 from rapidfuzz import fuzz
 
 from ..utils.clean import normalize_name
-from ..utils.settings import SILVER_DIR
+from ..utils.settings import PARQUET_OUT_DIR, SILVER_DIR
 
 
 SOCIOS_PARQUET = SILVER_DIR / "socios.parquet"
+SOCIOS_EMPRESAS_PARQUET = PARQUET_OUT_DIR / "empresas" / "socios_empresas.parquet"
+FOUNDER_WINDOW_DAYS = 31
+ASSOCIACOES_EMPRESA_DTYPE = pl.List(
+    pl.Struct({"cnpj_basico": pl.Utf8, "datas": pl.List(pl.Date)})
+)
+DATAS_ASSOCIACAO_DTYPE = pl.List(pl.Date)
 
 
 def _middle_cpf_fragment(value: str | None) -> str:
@@ -63,6 +69,38 @@ def _load_socios_base() -> pl.DataFrame | None:
     return grouped
 
 
+def _parse_date(expr: pl.Expr) -> pl.Expr:
+    expr_utf8 = expr.cast(pl.Utf8)
+    parsed_iso = expr_utf8.str.strptime(pl.Date, format="%Y-%m-%d", strict=False)
+    parsed_compact = expr_utf8.str.strptime(pl.Date, format="%Y%m%d", strict=False)
+    return parsed_iso.fill_null(parsed_compact)
+
+
+def _load_empresas_base() -> pl.DataFrame | None:
+    if not SOCIOS_EMPRESAS_PARQUET.exists():
+        logger.warning(
+            "Arquivo socios_empresas.parquet não encontrado em %s",
+            SOCIOS_EMPRESAS_PARQUET,
+        )
+        return None
+    empresas = pl.read_parquet(
+        SOCIOS_EMPRESAS_PARQUET, columns=["cnpj_basico", "data_inicio_atividade"]
+    )
+    if empresas.is_empty():
+        logger.warning("Base de empresas está vazia; não será possível marcar fundadores.")
+        return None
+    empresas = empresas.with_columns(
+        [
+            pl.col("cnpj_basico").cast(pl.Utf8),
+            _parse_date(pl.col("data_inicio_atividade")).alias("data_inicio_atividade_date"),
+        ]
+    ).filter(pl.col("cnpj_basico").is_not_null() & (pl.col("cnpj_basico") != ""))
+    if empresas.is_empty():
+        logger.warning("Nenhum CNPJ válido encontrado na base de empresas.")
+        return None
+    return empresas.select(["cnpj_basico", "data_inicio_atividade_date"]).unique("cnpj_basico")
+
+
 def _has_similar_name(nome: str, candidatos: Iterable[str], *, threshold: int = 90) -> bool:
     if not nome:
         return False
@@ -101,10 +139,14 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
         return df.with_columns([
             pl.lit(False).alias("socio_cpf"),
             pl.lit(False).alias("socio_nome"),
+            pl.lit(False).alias("fundador"),
             pl.lit(False).alias("socio"),
             pl.lit([], dtype=pl.List(pl.Utf8)).alias("cnpj_basico"),
             pl.lit([], dtype=pl.List(pl.Utf8)).alias("data_associacao"),
-        ]).select(required_cols + ["socio_cpf", "socio_nome", "socio", "cnpj_basico", "data_associacao"])
+            pl.lit([], dtype=DATAS_ASSOCIACAO_DTYPE).alias("datas_associacao"),
+            pl.lit(None).cast(pl.Date).alias("data_associacao_primeira"),
+            pl.lit([], dtype=ASSOCIACOES_EMPRESA_DTYPE).alias("datas_associacao_por_empresa"),
+        ]).select(required_cols + ["socio_cpf", "socio_nome", "socio", "fundador", "cnpj_basico", "data_associacao", "datas_associacao", "data_associacao_primeira", "datas_associacao_por_empresa"])
 
     df = df.with_columns(
         pl.col("cpf_limpo").map_elements(_middle_cpf_fragment, return_dtype=pl.Utf8).alias("cpf_fragment")
@@ -160,10 +202,104 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
     df = df.drop("matched_socios")
 
     df = df.with_columns(
-        (pl.col("cnpj_basico").list.len().fill_null(0) > 0).alias("socio_nome")
+        (pl.col("cnpj_basico").list.len().fill_null(0) > 0).alias("socio_nome"),
     )
 
     df = df.with_columns((pl.col("socio_cpf") & pl.col("socio_nome")).alias("socio"))
+
+    df = df.with_columns(
+        pl.when(
+            pl.col("data_associacao").is_null()
+            | (pl.col("data_associacao").list.len().fill_null(0) == 0)
+        )
+        .then(pl.lit([], dtype=DATAS_ASSOCIACAO_DTYPE))
+        .otherwise(pl.col("data_associacao").list.eval(_parse_date(pl.element())))
+        .alias("datas_associacao")
+    )
+
+    df = df.with_columns(
+        pl.when(pl.col("datas_associacao").list.len().fill_null(0) == 0)
+        .then(pl.lit(None).cast(pl.Date))
+        .otherwise(pl.col("datas_associacao").list.min())
+        .alias("data_associacao_primeira")
+    )
+
+    associacoes_por_empresa = (
+        df.select(["id_pessoa", "cnpj_basico", "datas_associacao"])
+        .explode(["cnpj_basico", "datas_associacao"])
+        .filter(
+            pl.col("cnpj_basico").is_not_null()
+            & (pl.col("cnpj_basico") != "")
+            & pl.col("datas_associacao").is_not_null()
+        )
+        .rename({"datas_associacao": "data_associacao_date"})
+    )
+    if associacoes_por_empresa.is_empty():
+        df = df.with_columns(pl.lit([], dtype=ASSOCIACOES_EMPRESA_DTYPE).alias("datas_associacao_por_empresa"))
+    else:
+        associacoes_por_empresa = (
+            associacoes_por_empresa.group_by(["id_pessoa", "cnpj_basico"])
+            .agg(pl.col("data_associacao_date").sort().alias("datas"))
+            .with_columns(
+                pl.struct(["cnpj_basico", "datas"]).alias("assoc_struct")
+            )
+            .group_by("id_pessoa")
+            .agg(pl.col("assoc_struct").alias("datas_associacao_por_empresa"))
+        )
+        df = df.join(associacoes_por_empresa, on="id_pessoa", how="left").with_columns(
+            pl.when(pl.col("datas_associacao_por_empresa").is_null())
+            .then(pl.lit([], dtype=ASSOCIACOES_EMPRESA_DTYPE))
+            .otherwise(pl.col("datas_associacao_por_empresa"))
+            .alias("datas_associacao_por_empresa")
+        )
+
+    empresas = _load_empresas_base()
+    if empresas is None:
+        df = df.with_columns(pl.lit(False).alias("fundador"))
+    else:
+        founder_candidates = (
+            df.select(["id_pessoa", "socio", "cnpj_basico", "data_associacao"])
+            .explode(["cnpj_basico", "data_associacao"])
+            .filter(
+                pl.col("socio")
+                & pl.col("cnpj_basico").is_not_null()
+                & (pl.col("cnpj_basico") != "")
+                & pl.col("data_associacao").is_not_null()
+                & (pl.col("data_associacao") != "")
+            )
+        )
+        if founder_candidates.is_empty():
+            df = df.with_columns(pl.lit(False).alias("fundador"))
+        else:
+            founder_candidates = founder_candidates.with_columns(
+                _parse_date(pl.col("data_associacao")).alias("data_associacao_date")
+            )
+            joined = founder_candidates.join(empresas, on="cnpj_basico", how="left")
+            founder_matches = (
+                joined.filter(
+                    pl.col("data_inicio_atividade_date").is_not_null()
+                    & pl.col("data_associacao_date").is_not_null()
+                    & (
+                        (
+                            pl.col("data_associacao_date") - pl.col("data_inicio_atividade_date")
+                        )
+                        .dt.days()
+                        .abs()
+                        <= FOUNDER_WINDOW_DAYS
+                    )
+                )
+                .select("id_pessoa")
+                .unique()
+                .with_columns(pl.lit(True).alias("fundador_flag"))
+            )
+            if founder_matches.is_empty():
+                df = df.with_columns(pl.lit(False).alias("fundador"))
+            else:
+                df = (
+                    df.join(founder_matches, on="id_pessoa", how="left")
+                    .with_columns(pl.col("fundador_flag").fill_null(False).alias("fundador"))
+                    .drop("fundador_flag")
+                )
 
     output_cols = [
         "id_pessoa",
@@ -181,8 +317,12 @@ def mark_founders(df: pl.DataFrame) -> pl.DataFrame:
         "socio_cpf",
         "socio_nome",
         "socio",
+        "fundador",
         "cnpj_basico",
         "data_associacao",
+        "datas_associacao",
+        "data_associacao_primeira",
+        "datas_associacao_por_empresa",
     ]
 
     return df.select(output_cols)
