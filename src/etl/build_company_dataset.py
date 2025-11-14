@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import csv
 from pathlib import Path
 from typing import Iterable, Sequence
 
 import polars as pl
+from polars.exceptions import PolarsError
 from loguru import logger
 
 from ..utils.settings import CNPJ_BASE_DIR, PARQUET_OUT_DIR
@@ -120,40 +122,98 @@ def _read_filtered_csv(
     paths: Sequence[Path],
     columns: Sequence[str],
     targets_lazy: pl.LazyFrame,
+    target_values: set[str],
+    *,
+    quote_char: str | None = '"',
 ) -> pl.DataFrame:
+    schema = {col: pl.Utf8 for col in columns}
     if not paths:
-        return pl.DataFrame({col: [] for col in columns}, schema={col: pl.Utf8 for col in columns})
+        return pl.DataFrame({col: [] for col in columns}, schema=schema)
     frames: list[pl.LazyFrame] = []
     for path in paths:
-        scan = (
-            pl.scan_csv(
-                path,
-                separator=";",
-                has_header=False,
-                new_columns=list(columns),
-                schema_overrides={col: pl.Utf8 for col in columns},
-                ignore_errors=True,
-                encoding="utf8-lossy",
-                quote_char=None,
+        try:
+            scan = (
+                pl.scan_csv(
+                    path,
+                    separator=";",
+                    has_header=False,
+                    new_columns=list(columns),
+                    schema_overrides=schema,
+                    ignore_errors=True,
+                    encoding="utf8-lossy",
+                    quote_char=quote_char,
+                    truncate_ragged_lines=True,
+                )
+                .select(list(columns))
+                .join(targets_lazy, on="cnpj_basico", how="inner")
             )
-            .join(targets_lazy, on="cnpj_basico", how="inner")
-        )
-        frames.append(scan)
+            frames.append(scan)
+        except PolarsError as exc:
+            logger.warning(
+                "Falha ao ler %s com Polars (%s). Usando fallback csv.reader.", path.name, exc
+            )
+            fallback_df = _read_filtered_csv_fallback(
+                path,
+                columns,
+                target_values=target_values,
+                quote_char=quote_char,
+            )
+            if fallback_df is not None and not fallback_df.is_empty():
+                frames.append(fallback_df.lazy())
     if not frames:
-        return pl.DataFrame()
-    # Use streaming execution to avoid keeping every arquivo residente em memória.
+        return pl.DataFrame({col: [] for col in columns}, schema=schema)
     return pl.concat(frames).collect(streaming=True)
 
 
-def _load_empresas(paths: Sequence[Path], targets_lazy: pl.LazyFrame) -> pl.DataFrame:
-    empresas = _read_filtered_csv(paths, EMPRESAS_COLUMNS, targets_lazy)
+def _read_filtered_csv_fallback(
+    path: Path,
+    columns: Sequence[str],
+    target_values: set[str],
+    quote_char: str | None,
+) -> pl.DataFrame | None:
+    records: list[list[str]] = []
+    try:
+        with path.open("r", encoding="latin1", newline="") as handle:
+            if quote_char is None:
+                reader = csv.reader(handle, delimiter=";", quoting=csv.QUOTE_NONE)
+            else:
+                reader = csv.reader(handle, delimiter=";", quotechar=quote_char)
+            for row in reader:
+                if not row:
+                    continue
+                key = (row[0] or "").strip()
+                if key and key not in target_values:
+                    continue
+                values = list(row[: len(columns)])
+                if len(values) < len(columns):
+                    values.extend([""] * (len(columns) - len(values)))
+                records.append(values)
+    except OSError as exc:
+        logger.error("Não foi possível abrir %s (%s)", path, exc)
+        return None
+    if not records:
+        return None
+    df = pl.DataFrame(records, schema=list(columns))
+    return df.with_columns([pl.col(col).cast(pl.Utf8) for col in columns])
+
+
+def _load_empresas(
+    paths: Sequence[Path],
+    targets_lazy: pl.LazyFrame,
+    target_values: set[str],
+) -> pl.DataFrame:
+    empresas = _read_filtered_csv(paths, EMPRESAS_COLUMNS, targets_lazy, target_values)
     if empresas.is_empty():
         return empresas
     return empresas.with_columns(pl.col("cnpj_basico").cast(pl.Utf8)).unique("cnpj_basico")
 
 
-def _load_simples(paths: Sequence[Path], targets_lazy: pl.LazyFrame) -> pl.DataFrame:
-    simples = _read_filtered_csv(paths, SIMPLES_COLUMNS, targets_lazy)
+def _load_simples(
+    paths: Sequence[Path],
+    targets_lazy: pl.LazyFrame,
+    target_values: set[str],
+) -> pl.DataFrame:
+    simples = _read_filtered_csv(paths, SIMPLES_COLUMNS, targets_lazy, target_values)
     if simples.is_empty():
         return simples
     return simples.with_columns(pl.col("cnpj_basico").cast(pl.Utf8)).unique("cnpj_basico")
@@ -162,8 +222,15 @@ def _load_simples(paths: Sequence[Path], targets_lazy: pl.LazyFrame) -> pl.DataF
 def _load_estabelecimentos(
     paths: Sequence[Path],
     targets_lazy: pl.LazyFrame,
+    target_values: set[str],
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    estabelecimentos = _read_filtered_csv(paths, ESTABELECIMENTOS_COLUMNS, targets_lazy)
+    estabelecimentos = _read_filtered_csv(
+        paths,
+        ESTABELECIMENTOS_COLUMNS,
+        targets_lazy,
+        target_values,
+        quote_char=None,
+    )
     if estabelecimentos.is_empty():
         schema = {col: pl.Utf8 for col in ESTABELECIMENTOS_COLUMNS}
         vazio = pl.DataFrame({col: [] for col in ESTABELECIMENTOS_COLUMNS}, schema=schema)
@@ -232,15 +299,17 @@ def build_company_dataset(
     paths = _collect_extract_paths(extract_dir)
 
     logger.info("Lendo informações de Empresas.")
-    empresas = _load_empresas(paths.empresas, targets_lazy)
+    empresas = _load_empresas(paths.empresas, targets_lazy, target_cnpjs)
 
     logger.info("Lendo informações de Estabelecimentos.")
     estabelecimentos_all, estabelecimentos_matriz = _load_estabelecimentos(
-        paths.estabelecimentos, targets_lazy
+        paths.estabelecimentos,
+        targets_lazy,
+        target_cnpjs,
     )
 
     logger.info("Lendo informações de Simples.")
-    simples = _load_simples(paths.simples, targets_lazy)
+    simples = _load_simples(paths.simples, targets_lazy, target_cnpjs)
 
     result = targets_df.lazy()
     if not empresas.is_empty():
